@@ -49,15 +49,65 @@ def _which(binary: str) -> Optional[str]:
     return shutil.which(binary)
 
 
-def run_cli(
+def run(
     spec: CLISpec | str,
     prompt: str | None = None,
     *,
+    model: str | None = None,
+    fast: bool | None = None,
     stdin_content: str | None = None,
     strip_keys: bool = False,
     timeout_s: int = DEFAULT_TIMEOUT,
     skip_cache_check: bool = True,
     cwd: str | Path | None = None,
+) -> CLIResult:
+    """Invoke ONE CLI subprocess, return a CLIResult.
+
+    Friendly call-site shortcuts:
+        run("claude", "hello")                        # simplest
+        run("claude", "hello", model="sonnet")
+        run("gemini", "hi", fast=False)               # disable speed flags
+        run("claude", "summarize:", stdin_content=long_text)
+
+    When `spec` is a string, it's looked up in KNOWN_CLIS. `model` and `fast`
+    override the spec's defaults without requiring a dataclass-replace dance.
+    For anything exotic, pass a pre-built CLISpec instead of a string.
+    """
+    # String-name → spec with optional overrides
+    if isinstance(spec, str):
+        overrides = {}
+        if model is not None:
+            overrides["model"] = model
+        if fast is not None:
+            overrides["fast"] = fast
+        spec = get_spec(spec, **overrides)
+    elif model is not None or fast is not None:
+        # spec is already a CLISpec; apply overrides
+        from dataclasses import replace
+
+        overrides = {}
+        if model is not None:
+            overrides["model"] = model
+        if fast is not None:
+            overrides["fast"] = fast
+        spec = replace(spec, **overrides)
+
+    return _run_impl(
+        spec, prompt,
+        stdin_content=stdin_content, strip_keys=strip_keys,
+        timeout_s=timeout_s, skip_cache_check=skip_cache_check, cwd=cwd,
+    )
+
+
+def _run_impl(
+    spec: CLISpec,
+    prompt: str | None,
+    *,
+    stdin_content: str | None,
+    strip_keys: bool,
+    timeout_s: int,
+    skip_cache_check: bool,
+    cwd: str | Path | None,
 ) -> CLIResult:
     """Invoke one CLI subprocess, return a CLIResult.
 
@@ -71,9 +121,6 @@ def run_cli(
       skip_cache_check If True (default), bail early if cli is in skip-cache.
       cwd              Working directory for the subprocess.
     """
-    if isinstance(spec, str):
-        spec = get_spec(spec)
-
     if skip_cache_check and is_skipped(spec.cli):
         return CLIResult(
             spec=spec, ok=False, stdout="", stderr=f"{spec.cli} is in skip-cache (recent failure)",
@@ -139,6 +186,87 @@ def run_cli(
     return result
 
 
+def fallback(
+    specs: Iterable[CLISpec | str],
+    prompt: str | None = None,
+    *,
+    stdin_content: str | None = None,
+    free_first: bool = True,
+    retry_paid: bool = True,
+    timeout_s: int = DEFAULT_TIMEOUT,
+    cwd: str | Path | None = None,
+) -> list[CLIResult]:
+    """Try CLIs in order, return the first success (or all failures).
+
+    Example:
+        results = fallback(["claude", "codex", "gemini"], "summarize this")
+        first_ok = next((r for r in results if r.ok), None)
+        if first_ok:
+            print(first_ok.stdout)
+
+    Two passes, both optional:
+      Pass 1 (free_first=True, default) — strip each spec's env_strip keys
+        before invoking. For claude/codex/gemini this forces subscription
+        mode rather than burning API credits. Claude CLI, for instance,
+        prefers ANTHROPIC_API_KEY over your Claude.ai subscription when the
+        var is set; stripping flips it back.
+      Pass 2 (retry_paid=True, default) — retry each spec with env keys
+        intact, in case subscription is unavailable and the paid API is
+        the only path that works.
+
+    Returns the full list of attempts in order (one CLIResult per try),
+    stopping at the first success. If every spec fails both passes, the
+    list has one entry per spec per pass.
+    """
+    specs_list = [get_spec(s) if isinstance(s, str) else s for s in specs]
+    results: list[CLIResult] = []
+
+    # Force every spec to get a real attempt this call — the fallback chain
+    # is explicit intent, not something skip-cache should short-circuit.
+    if free_first:
+        for spec in specs_list:
+            r = _run_impl(
+                spec, prompt, stdin_content=stdin_content,
+                strip_keys=True, timeout_s=timeout_s, cwd=cwd,
+                skip_cache_check=False,
+            )
+            results.append(r)
+            if r.ok:
+                return results
+
+    if retry_paid:
+        for spec in specs_list:
+            r = _run_impl(
+                spec, prompt, stdin_content=stdin_content,
+                strip_keys=False, timeout_s=timeout_s, cwd=cwd,
+                skip_cache_check=False,
+            )
+            results.append(r)
+            if r.ok:
+                return results
+
+    return results
+
+
+# Back-compat aliases — original names, unchanged signatures.
+def run_cli(
+    spec: CLISpec | str,
+    prompt: str | None = None,
+    *,
+    stdin_content: str | None = None,
+    strip_keys: bool = False,
+    timeout_s: int = DEFAULT_TIMEOUT,
+    skip_cache_check: bool = True,
+    cwd: str | Path | None = None,
+) -> CLIResult:
+    """Back-compat alias for `run`. New code should use `run`."""
+    return run(
+        spec, prompt,
+        stdin_content=stdin_content, strip_keys=strip_keys,
+        timeout_s=timeout_s, skip_cache_check=skip_cache_check, cwd=cwd,
+    )
+
+
 def run_with_fallback(
     specs: Iterable[CLISpec | str],
     prompt: str | None = None,
@@ -149,43 +277,10 @@ def run_with_fallback(
     timeout_s: int = DEFAULT_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> list[CLIResult]:
-    """Run CLIs in order, returning after the first success.
-
-    Pass 1 (if strip_keys_first=True): try each spec with env keys stripped.
-      This forces subscription-mode on CLIs that prefer paid API when keys present.
-    Pass 2 (if retry_with_keys=True): try each spec with env keys present.
-      This catches the case where the key IS required (no subscription available).
-
-    Returns the full list of attempts (one CLIResult per try). The caller
-    picks out the first .ok or handles multi-failure.
-    """
-    specs_list = [get_spec(s) if isinstance(s, str) else s for s in specs]
-    results: list[CLIResult] = []
-
-    # Fallback chain deliberately tries multiple engines and passes. Don't
-    # let skip-cache short-circuit that — each individual run_cli still
-    # updates skip-cache on failure, but we force every spec to get a real
-    # attempt this call.
-    if strip_keys_first:
-        for spec in specs_list:
-            r = run_cli(
-                spec, prompt, stdin_content=stdin_content,
-                strip_keys=True, timeout_s=timeout_s, cwd=cwd,
-                skip_cache_check=False,
-            )
-            results.append(r)
-            if r.ok:
-                return results
-
-    if retry_with_keys:
-        for spec in specs_list:
-            r = run_cli(
-                spec, prompt, stdin_content=stdin_content,
-                strip_keys=False, timeout_s=timeout_s, cwd=cwd,
-                skip_cache_check=False,
-            )
-            results.append(r)
-            if r.ok:
-                return results
-
-    return results
+    """Back-compat alias for `fallback`. New code should use `fallback`."""
+    return fallback(
+        specs, prompt,
+        stdin_content=stdin_content,
+        free_first=strip_keys_first, retry_paid=retry_with_keys,
+        timeout_s=timeout_s, cwd=cwd,
+    )
