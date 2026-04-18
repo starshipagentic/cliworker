@@ -66,22 +66,57 @@ def _rewrite_use_keyword(argv: list[str]) -> list[str]:
 
 HELP_EPILOG = """\
 \b
-Shell examples:
-  cliworker "what is TCP?"                     default chain
+Shell — the natural shape
+  cliworker "what is TCP?"                     default chain, free only
   cliworker "summarize:" < file.txt            stdin as bulk content
-  cliworker "hi" use claude gemini             chain in order
-  cliworker --use claude,gemini "hi"           flag form
-  cliworker "hi" use claude -m sonnet          model override
-  cliworker "hi" --paid-ok all                 allow paid API fallback everywhere
-  cliworker "hi" --paid-ok claude,codex        allow paid only on those two
-  cliworker doctor                             health check
-  cliworker doctor --probe                     also ping each CLI
+  cliworker "hi" use claude                    one specific CLI
+  cliworker "hi" use claude gemini             chain in stated order
+  cliworker --use claude,gemini "hi"           flag form (for scripts)
+  cliworker --llm claude,gemini "hi"           --llm aliases --use
 
 \b
-Python library:
+Options for any bare-prompt invocation
+  --use, --llm TEXT    CLI names to try (comma-separated), in order.
+  -m, --model TEXT     Model override (sonnet, gemini-2.5-flash, llama3.1).
+  --paid-ok TEXT       Allow paid API fallback. 'all' or 'claude,codex,...'.
+                       Default: never. cliworker stays free-only unless you
+                       opt in here or persistently via state.json.
+  --timeout INTEGER    Seconds per CLI before we give up. Default 120.
+  -v, --verbose        Log winner CLI + duration to stderr.
+
+\b
+Paid API — opt-in examples
+  cliworker "hi"                               free only (default)
+  cliworker "hi" --paid-ok all                 paid OK for every CLI
+  cliworker "hi" --paid-ok claude              paid OK for claude only
+  cliworker "hi" use claude codex --paid-ok claude
+                                               use both, but only claude may pay
+
+\b
+Diagnostic subcommands
+  cliworker doctor                             which CLIs are installed?
+  cliworker doctor --probe                     ping each with "say ok"
+  cliworker info                               show default argv per CLI
+  cliworker info claude                        show one CLI's recipe
+  cliworker setup                              re-run first-run diagnostics
+  cliworker skip-cache                         inspect broken-engine cache
+  cliworker skip-cache --clear ALL             clear it all
+  cliworker skip-cache --clear claude          clear one
+
+\b
+Python library
   from cliworker import run, use
-  run("claude", "hi")
-  use(["claude","codex"], "hi")
+  r = run("claude", "hi")                              # one call
+  r = run("claude", "hi", model="sonnet")              # model override
+  rs = use(["claude","codex"], "hi")                   # chain, free only
+  rs = use(["claude","codex"], "hi", paid_ok=True)     # paid OK for all
+  rs = use(["claude","codex"], "hi", paid_ok=["claude"])  # paid OK for one
+
+\b
+State
+  First-run saves default chain + paid_ok preference to
+  ~/.config/cliworker/state.json (respects XDG_CONFIG_HOME). Edit
+  anytime or re-run `cliworker setup` to re-answer the prompts.
 
 \b
 Full docs: https://github.com/starshipagentic/cliworker
@@ -248,12 +283,25 @@ def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, 
 @main.command()
 @click.argument("cli_name", required=False)
 def info(cli_name: str | None) -> None:
-    """Show the default argv recipe for each CLI.
+    """Show the default argv recipe for each CLI — the exact subprocess call
+    cliworker would make. Useful for debugging "why is claude failing?" or
+    "what flags does cliworker apply?"
+
+    \b
+    Fields shown per CLI:
+      cli binary         what `shutil.which` looks up
+      subcommand         e.g. 'exec' for codex
+      model_flag         how to pass --model (or empty = positional)
+      prompt transport   positional | flag | stdin
+      fast flags         ON = applies per-CLI speed tricks
+      env vars stripped  which API-key vars are removed for subscription mode
+      sample argv        the full shell argv cliworker would build
 
     \b
     Examples:
-      cliworker info                    show all
-      cliworker info claude             show one
+      cliworker info                    show all four known CLIs
+      cliworker info claude             show claude only
+      cliworker info codex              show codex only
     """
     names = [cli_name] if cli_name else list(KNOWN_CLIS.keys())
     for name in names:
@@ -276,16 +324,22 @@ def info(cli_name: str | None) -> None:
 @click.option("--probe/--no-probe", default=False, help="Invoke each installed CLI with a tiny prompt to measure cold start.")
 @click.option("--probe-timeout", default=30, show_default=True)
 def doctor(probe: bool, probe_timeout: int) -> None:
-    """Scan PATH for installed LLM CLIs, optionally probe them.
+    """Scan PATH for installed LLM CLIs; optionally probe with a live call.
 
     \b
-    Without --probe: fast scan, never invokes anything.
-    With    --probe: runs each CLI with "say ok" and reports duration.
+    Two modes:
+      (default)  Fast PATH scan only. Never invokes anything. ~10ms.
+      --probe    Actually runs each installed CLI with "say ok" and
+                 reports duration. Uses your subscription (keys stripped).
+                 Helpful for confirming CLAUDE_FAST is working, or
+                 comparing cold-start times across CLIs.
 
     \b
     Examples:
-      cliworker doctor
+      cliworker doctor                         fast scan
+      cliworker doctor --probe                 + timing probe
       cliworker doctor --probe --probe-timeout 60
+                                               generous timeout for cold ollama
     """
     presences = detect()
     for name, p in presences.items():
@@ -313,11 +367,29 @@ def doctor(probe: bool, probe_timeout: int) -> None:
 @main.command()
 def setup() -> None:
     """Re-run the first-run diagnostics. Never auto-installs anything — just
-    prints actionable commands for whatever's missing.
+    prints actionable commands for whatever's missing, then re-asks the
+    paid-API-fallback preference.
 
     \b
-    Example:
-      cliworker setup
+    What it does:
+      1. Shows the ASCII banner
+      2. Scans PATH for claude / codex / gemini / ollama
+      3. For each missing CLI: prints the exact install command
+         (e.g. `npm i -g @openai/codex`, `brew install ollama`)
+      4. Checks if ollama has the default model (llama3.1) pulled, prints
+         `ollama pull llama3.1` if not
+      5. Prompts: "Allow paid API fallback for any CLIs now? [y/N]"
+         → no  = state.json saves paid_ok=null (free forever)
+         → yes = asks "Which CLIs? (comma-separated or 'all')"
+      6. Writes ~/.config/cliworker/state.json
+
+    \b
+    Examples:
+      cliworker setup                run the interactive setup wizard
+      rm ~/.config/cliworker/state.json && cliworker "hi"
+                                     force re-setup next invocation
+
+    Nothing is ever auto-installed. The wizard prints what to run; you run it.
     """
     firstrun.run_diagnostics()
 
@@ -329,7 +401,28 @@ def setup() -> None:
 @main.command("skip-cache")
 @click.option("--clear", "clear_name", default=None, help="CLI name to clear, or 'ALL' for everything.")
 def skip_cache_cmd(clear_name: str | None) -> None:
-    """Show or clear the broken-engine skip cache (1h TTL auto-expiry)."""
+    """Show or clear the broken-engine skip cache.
+
+    \b
+    What it is:
+      When a CLI invocation fails (bad auth, quota hit, subscription
+      lapsed), cliworker remembers that failure for 1 hour so subsequent
+      calls don't keep retrying and eating seconds. The cache is a tiny
+      JSON file at ~/.cache/cliworker/skip-cache.json (XDG-aware).
+
+    \b
+    Examples:
+      cliworker skip-cache                  inspect — shows which CLIs are suppressed
+      cliworker skip-cache --clear claude   un-suppress just claude
+      cliworker skip-cache --clear ALL      reset everything
+      rm ~/.cache/cliworker/skip-cache.json same effect as --clear ALL
+
+    \b
+    When to use:
+      * Just fixed a subscription — `--clear <cli>` so cliworker retries it now
+      * Debugging why a CLI isn't being tried — inspect to see if it's suppressed
+      * Anytime you want a fresh slate
+    """
     import time
 
     from cliworker.skipcache import DEFAULT_CACHE_PATH, clear, _load
