@@ -116,6 +116,7 @@ KNOWN_CLIS: dict[str, CLISpec] = {
     "ollama": CLISpec(
         cli="ollama",
         subcommand="run",
+        model="gemma3:4b",           # cliworker's default local model (from navcom)
         prompt_flag="positional",    # ollama run <model> <prompt>
         model_flag="",               # model is a bare positional, not a flag
         fast=False,

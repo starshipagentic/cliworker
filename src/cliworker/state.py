@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-DEFAULT_OLLAMA_MODEL = "llama3.1"
+DEFAULT_OLLAMA_MODEL = "gemma3:4b"
 BUILT_IN_ORDER = ("claude", "codex", "gemini", "ollama")
 
 

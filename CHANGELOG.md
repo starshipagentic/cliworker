@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.3 — fix default ollama model + probe behavior
+
+Three real bugs surfaced by actually running every command end-to-end:
+
+- **ollama default model is now `gemma3:4b`** (was `llama3.1`). This is the
+  model navcom uses (`navcom.py:27: SUMMARY_MODEL_DEFAULT = "gemma3:4b"`)
+  and the one already on the dev machine. Picking an unpulled default
+  was causing `doctor --probe` to fail with cryptic "invalid model name".
+  Fixed in `registry.py` (`CLISpec(..., model="gemma3:4b", ...)`), in
+  `state.py` (`DEFAULT_OLLAMA_MODEL`), and in `runner.py` default arg.
+- **`cliworker doctor --probe` now strips API keys by default.** Probes
+  test the subscription path (matching cliworker's free-first default)
+  instead of trying paid API. Also auto-clears skip-cache at the start
+  of a probe run so stale failures don't mask current state.
+- **Better ollama error message** when a model isn't pulled. Previously
+  just bubbled up ollama's cryptic `Error: invalid model name`. Now
+  cliworker recognizes that specific error and rewrites it:
+  `ollama model 'gemma3:4b' not pulled. Run: ollama pull gemma3:4b`.
+
+Verified by hand: `cliworker doctor --probe --probe-timeout 60` now
+shows all four CLIs succeeding (claude 4.1s, codex 7.2s, gemini 6.5s,
+ollama 0.5s) on this machine.
+
+41 tests still green.
+
 ## 0.5.0 — free-by-default, paid opt-in (breaking)
 
 Flipped the default: cliworker now never uses paid API fallback unless

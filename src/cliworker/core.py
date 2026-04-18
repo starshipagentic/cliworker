@@ -155,8 +155,18 @@ def _run_impl(
             )
             duration = time.monotonic() - start
             ok = proc.returncode == 0
+            stdout, stderr = proc.stdout, proc.stderr
+            # Friendlier error for ollama's cryptic "invalid model name" — it
+            # actually means the model isn't pulled. Point the user at the fix.
+            if not ok and spec.cli == "ollama" and stderr and "invalid model" in stderr.lower():
+                model_in_argv = argv[2] if len(argv) >= 3 else "gemma3:4b"
+                stderr = (
+                    f"ollama model '{model_in_argv}' not pulled. "
+                    f"Run: ollama pull {model_in_argv}\n"
+                    f"(original ollama error: {stderr.strip()})"
+                )
             return CLIResult(
-                spec=spec, ok=ok, stdout=proc.stdout, stderr=proc.stderr,
+                spec=spec, ok=ok, stdout=stdout, stderr=stderr,
                 duration_s=duration, returncode=proc.returncode, argv=argv,
             )
         except subprocess.TimeoutExpired:

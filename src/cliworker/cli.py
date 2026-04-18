@@ -349,15 +349,23 @@ def doctor(probe: bool, probe_timeout: int) -> None:
 
     if probe:
         click.echo()
-        click.echo(click.style("Probing installed CLIs (one-shot 'say ok')...", bold=True))
+        click.echo(click.style("Probing installed CLIs (one-shot 'say ok', subscription mode)...", bold=True))
+        from cliworker.skipcache import DEFAULT_CACHE_PATH, clear
+
+        # Don't let stale skip-cache suppress probes — probes are a diagnostic
+        # tool, the user asked for fresh info. Clear once before probing.
+        clear(None, path=DEFAULT_CACHE_PATH)
         for name, p in presences.items():
             if not p.installed:
                 continue
-            result = run(name, "Say exactly: ok", timeout_s=probe_timeout)
+            # strip_keys=True: use subscription, matching cliworker's default
+            # behavior for bare-prompt invocations.
+            result = run(name, "Say exactly: ok", strip_keys=True, timeout_s=probe_timeout)
             if result.ok:
                 click.echo(f"  {name:8}  {result.duration_s:5.2f}s  {click.style('ok', fg='green')}")
             else:
-                click.echo(f"  {name:8}  {result.duration_s:5.2f}s  {click.style('fail', fg='red')}  {result.stderr[:60]}")
+                err = result.stderr.strip()[:80] or "(no stderr)"
+                click.echo(f"  {name:8}  {result.duration_s:5.2f}s  {click.style('fail', fg='red')}  {err}")
 
 
 # ---------------------------------------------------------------------------
