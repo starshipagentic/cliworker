@@ -72,7 +72,8 @@ Shell examples:
   cliworker "hi" use claude gemini             chain in order
   cliworker --use claude,gemini "hi"           flag form
   cliworker "hi" use claude -m sonnet          model override
-  cliworker "hi" --no-paid                     only try subscription mode
+  cliworker "hi" --paid-ok all                 allow paid API fallback everywhere
+  cliworker "hi" --paid-ok claude,codex        allow paid only on those two
   cliworker doctor                             health check
   cliworker doctor --probe                     also ping each CLI
 
