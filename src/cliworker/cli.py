@@ -115,8 +115,9 @@ Python library
 \b
 State
   First-run saves default chain + paid_ok preference to
-  ~/.config/cliworker/state.json (respects XDG_CONFIG_HOME). Edit
-  anytime or re-run `cliworker setup` to re-answer the prompts.
+  ~/.cliworker/state.json (or $XDG_CONFIG_HOME/cliworker/state.json
+  if XDG_CONFIG_HOME is explicitly set). Edit anytime or re-run
+  `cliworker setup` to re-answer the prompts.
 
 \b
 Full docs: https://github.com/starshipagentic/cliworker
@@ -389,12 +390,13 @@ def setup() -> None:
       5. Prompts: "Allow paid API fallback for any CLIs now? [y/N]"
          → no  = state.json saves paid_ok=null (free forever)
          → yes = asks "Which CLIs? (comma-separated or 'all')"
-      6. Writes ~/.config/cliworker/state.json
+      6. Writes ~/.cliworker/state.json (or $XDG_CONFIG_HOME/cliworker/
+         state.json if you set that env var)
 
     \b
     Examples:
       cliworker setup                run the interactive setup wizard
-      rm ~/.config/cliworker/state.json && cliworker "hi"
+      rm ~/.cliworker/state.json && cliworker "hi"
                                      force re-setup next invocation
 
     Nothing is ever auto-installed. The wizard prints what to run; you run it.
@@ -416,14 +418,15 @@ def skip_cache_cmd(clear_name: str | None) -> None:
       When a CLI invocation fails (bad auth, quota hit, subscription
       lapsed), cliworker remembers that failure for 1 hour so subsequent
       calls don't keep retrying and eating seconds. The cache is a tiny
-      JSON file at ~/.cache/cliworker/skip-cache.json (XDG-aware).
+      JSON file at ~/.cliworker/skip-cache.json (or $XDG_CACHE_HOME/
+      cliworker/skip-cache.json if that env var is set).
 
     \b
     Examples:
       cliworker skip-cache                  inspect — shows which CLIs are suppressed
       cliworker skip-cache --clear claude   un-suppress just claude
       cliworker skip-cache --clear ALL      reset everything
-      rm ~/.cache/cliworker/skip-cache.json same effect as --clear ALL
+      rm ~/.cliworker/skip-cache.json       same effect as --clear ALL
 
     \b
     When to use:

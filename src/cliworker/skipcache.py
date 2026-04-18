@@ -5,8 +5,9 @@ hit its daily quota, those calls will fail with the same error every time
 for some time. Caching the failure for a TTL (default 1h) prevents burning
 seconds per call until the user fixes auth.
 
-Cache file default: ~/.cache/cliworker/skip-cache.json (JSON dict of
-"cli-name": unix_timestamp_of_failure).
+Cache file default: ~/.cliworker/skip-cache.json (JSON dict of
+"cli-name": unix_timestamp_of_failure). If XDG_CACHE_HOME is set,
+honors it at $XDG_CACHE_HOME/cliworker/skip-cache.json.
 """
 from __future__ import annotations
 
@@ -16,9 +17,16 @@ import time
 from pathlib import Path
 
 
-DEFAULT_CACHE_DIR = Path(
-    os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
-) / "cliworker"
+def _default_cache_dir() -> Path:
+    """cliworker cache lives at ~/.cliworker/ by default. If XDG_CACHE_HOME
+    is explicitly set, we honor it at $XDG_CACHE_HOME/cliworker/."""
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg:
+        return Path(xdg) / "cliworker"
+    return Path.home() / ".cliworker"
+
+
+DEFAULT_CACHE_DIR = _default_cache_dir()
 DEFAULT_CACHE_PATH = DEFAULT_CACHE_DIR / "skip-cache.json"
 DEFAULT_TTL_SECONDS = 3600  # 1 hour
 

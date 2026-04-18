@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 — config/cache at ~/.cliworker/ (matches peer LLM CLIs) (breaking)
+
+Default path changed. cliworker's state + cache now live at
+`~/.cliworker/` — matching the dotfile-at-home convention of the tools
+cliworker orchestrates (`~/.claude/`, `~/.codex/`, `~/.gemini/`,
+`~/.ollama/`).
+
+    ~/.cliworker/state.json        (was ~/.config/cliworker/state.json)
+    ~/.cliworker/skip-cache.json   (was ~/.cache/cliworker/skip-cache.json)
+
+XDG is still honored when the user opts in explicitly:
+
+    if XDG_CONFIG_HOME is set → $XDG_CONFIG_HOME/cliworker/state.json
+    if XDG_CACHE_HOME  is set → $XDG_CACHE_HOME/cliworker/skip-cache.json
+
+This technically violates the XDG spec (which says unset XDG means
+use `~/.config/`) but is the right call for a tool whose peers don't
+respect XDG. Power users who set XDG explicitly get their preference;
+everyone else gets peer-consistent `~/.cliworker/`.
+
+Migration: no auto-migration. If you have state at the old path, move
+it yourself — `mv ~/.config/cliworker ~/.cliworker` — or just re-run
+`cliworker setup` to regenerate. No users known to exist yet.
+
+5 new path-resolution tests in test_paths.py verify: default is
+~/.cliworker/, XDG_CONFIG_HOME when set moves state, XDG_CACHE_HOME
+when set moves cache, empty-string XDG falls back to dotfile-at-home,
+and both paths co-located in one dir by default.
+
+Total: 70 tests green.
+
 ## 0.5.5 — add CLI smoke tests that would have caught the 0.5.2 bugs
 
 Honest gap: 0.5.2 shipped with 41 passing tests, but none of them

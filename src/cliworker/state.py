@@ -1,6 +1,10 @@
 """Persistent state: first-run flag, detected CLIs, default chain.
 
-Lives at $XDG_CONFIG_HOME/cliworker/state.json (default ~/.config/cliworker/state.json).
+Lives at ~/.cliworker/state.json by default, matching the convention of
+the LLM CLIs cliworker orchestrates (~/.claude/, ~/.codex/, ~/.gemini/,
+~/.ollama/). If XDG_CONFIG_HOME is explicitly set, honors that at
+$XDG_CONFIG_HOME/cliworker/state.json instead.
+
 One file, small schema, human-readable JSON. Users can edit it freely.
 """
 from __future__ import annotations
@@ -16,8 +20,14 @@ BUILT_IN_ORDER = ("claude", "codex", "gemini", "ollama")
 
 
 def _state_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(base) / "cliworker"
+    """cliworker state lives at ~/.cliworker/ by default — matching the
+    convention of the LLM CLIs we orchestrate (~/.claude/, ~/.codex/,
+    ~/.gemini/, ~/.ollama/). If the user explicitly set XDG_CONFIG_HOME,
+    they opted into XDG and we honor it at $XDG_CONFIG_HOME/cliworker/."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "cliworker"
+    return Path.home() / ".cliworker"
 
 
 def state_path() -> Path:

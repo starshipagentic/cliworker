@@ -35,7 +35,7 @@ cliworker encapsulates a year of tricks for calling these CLIs efficiently:
 | `gemini` has no config-override flag | Temporarily strips `mcpServers` from `~/.gemini/settings.json` and restores after |
 | CLIs prefer paid API keys over subscriptions when both exist | Default: strip API keys to force subscription use. Paid opt-in via `paid_ok` |
 | Surprise billing when a subscription expires | Default: never falls back to paid API. Opt-in per-CLI via `paid_ok=["claude"]` |
-| Broken CLIs (expired auth, quota hit) waste seconds every call | 1-hour skip-cache at `~/.cache/cliworker/skip-cache.json` |
+| Broken CLIs (expired auth, quota hit) waste seconds every call | 1-hour skip-cache at `~/.cliworker/skip-cache.json` |
 | Every CLI uses different prompt-transport conventions | Unified `run()` API; per-CLI recipes in `KNOWN_CLIS` |
 | Long transcripts bloat argv | `stdin_content=` pipes bulk content via stdin, keeps the instruction on argv |
 
@@ -74,7 +74,7 @@ the prompt; `use` tells cliworker which CLIs. That's it.
 
 **Default: free only.** cliworker never uses paid API fallback unless you
 explicitly allow it — either once via `--paid-ok`, or persistently by answering
-the first-run prompt (or editing `~/.config/cliworker/state.json`).
+the first-run prompt (or editing `~/.cliworker/state.json`).
 
 For diagnostics:
 
@@ -93,7 +93,7 @@ cliworker skip-cache --clear ALL             # reset it
 The first time you type `cliworker "..."`, cliworker shows an ASCII banner,
 scans PATH for installed CLIs, tells you exactly what to `npm i -g` /
 `brew install` / `ollama pull` for anything missing, and saves its config
-to `~/.config/cliworker/state.json`. Subsequent runs skip all that.
+to `~/.cliworker/state.json`. Subsequent runs skip all that.
 
 ## Python library — the mental model
 
@@ -317,7 +317,9 @@ The stripped env vars are defined per-spec:
 
 ### Skip-cache
 
-When a CLI fails (auth expired, subscription lapsed, quota hit), cliworker records it at `~/.cache/cliworker/skip-cache.json` with a timestamp. Next `run()` bails early with `skipped_reason="skip_cache"` if the entry is less than 1h old. Stale entries auto-clear.
+When a CLI fails (auth expired, subscription lapsed, quota hit), cliworker records it at `~/.cliworker/skip-cache.json` with a timestamp. Next `run()` bails early with `skipped_reason="skip_cache"` if the entry is less than 1h old. Stale entries auto-clear.
+
+If `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` are explicitly set, cliworker honors them (config at `$XDG_CONFIG_HOME/cliworker/`, cache at `$XDG_CACHE_HOME/cliworker/`). Unset? Both go to `~/.cliworker/` so cliworker's state sits next to `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.ollama/`.
 
 You can inspect and clear the cache via `cliworker skip-cache [--clear <name>|ALL]` or programmatically via `cliworker.skipcache.{is_skipped, mark_broken, clear}`.
 
