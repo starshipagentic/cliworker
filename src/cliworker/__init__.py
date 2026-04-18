@@ -33,7 +33,7 @@ from cliworker.core import (
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = [
     "run",
