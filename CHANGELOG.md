@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.5 — add CLI smoke tests that would have caught the 0.5.2 bugs
+
+Honest gap: 0.5.2 shipped with 41 passing tests, but none of them
+invoked `cliworker` end-to-end. All tests mocked `subprocess.run`.
+That's why the broken ollama default (`llama3.1` instead of `gemma3:4b`)
+slipped through, and why nothing noticed that `doctor --probe` wasn't
+stripping API keys.
+
+Added `tests/test_cli_smoke.py` with 24 end-to-end tests that invoke the
+real CLI via `CliRunner`:
+
+- Help-lint: every registered command (`--help`, `-h`, `--version`,
+  and each subcommand + `--help`) is parametrized and must exit 0 with
+  non-empty output.
+- Main-help content: must list all four public subcommands AND all
+  bare-prompt flags (`--use`, `--paid-ok`, `--timeout`, `--model`).
+- Default specs: `ollama.model == 'gemma3:4b'`, `state.DEFAULT_OLLAMA_MODEL`
+  matches the registry value (catches drift between the two sources),
+  claude default has `fast=True`, every advertised CLI in `KNOWN_CLIS`.
+- Dispatch: bare prompt → `_ask`, `use cli1 cli2` → those two in order,
+  default passes `paid_ok=None` (free-only).
+- `doctor --probe` E2E: monkeypatches `run()` + `detect()`, verifies all
+  four CLIs probed AND every probe call has `strip_keys=True`.
+- Error rewrite: ollama "invalid model name" must become actionable
+  "Run: ollama pull gemma3:4b" hint.
+- `skip-cache` subcommand exit codes + output.
+
+Total now: 65 tests green. Each one a regression-canary for something
+the prior suite let through.
+
 ## 0.5.3 — fix default ollama model + probe behavior
 
 Three real bugs surfaced by actually running every command end-to-end:
