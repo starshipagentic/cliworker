@@ -42,7 +42,7 @@ from cliworker.core import (
 from cliworker.registry import KNOWN_CLIS, get_spec
 from cliworker.state import default_chain
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 __all__ = [
     "run",
