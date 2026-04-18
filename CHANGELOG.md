@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — remove back-compat aliases (breaking)
+
+Dropped: `fallback()`, `run_cli()`, `run_with_fallback()`. The public Python
+API is now exactly `run()` and `use()`. Code using the old names must
+rename to the new ones — no silent coexistence.
+
+Every reference to "fallback" as a function scrubbed from source, tests,
+and docs. The concept (try these in order, fall through on failure) is
+still how `use()` works; we just stopped using the word as a function
+name.
+
 ## 0.3.0 — natural-language CLI, one-word verb, first-run diagnostics
 
 The CLI should feel like a tool, not a library's skin. 0.3.0 makes that real.

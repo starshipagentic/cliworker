@@ -17,7 +17,7 @@ What cliworker does for you, automatically:
   * claude -p gets CLAUDE_FAST_FLAGS (no MCP/tools/chrome) → 18s → 4s cold start
   * gemini -p strips mcpServers from ~/.gemini/settings.json during call
   * use() tries subscription mode first (strips env API keys),
-    then retries with keys for paid-API fallback
+    then retries each with keys intact (paid-API retry pass)
   * failed CLIs get cached for 1h so you don't re-spam a broken engine
 
 From a shell, it's even simpler:
@@ -30,26 +30,17 @@ from cliworker.core import (
     CLISpec,
     run,
     use,
-    # Back-compat aliases:
-    fallback,
-    run_cli,
-    run_with_fallback,
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
-    # Primary API
     "run",
     "use",
     "CLIResult",
     "CLISpec",
     "get_spec",
     "KNOWN_CLIS",
-    # Back-compat
-    "fallback",
-    "run_cli",
-    "run_with_fallback",
     "__version__",
 ]

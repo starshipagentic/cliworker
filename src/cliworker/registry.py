@@ -85,7 +85,7 @@ def _fast_flags_for(cli: str) -> list[str]:
     if cli == "claude":
         return list(CLAUDE_FAST_FLAGS)
     # codex, ollama, gemini: no argv-level fast flags.
-    # (gemini uses fs-level MCP strip handled in core.run_cli)
+    # (gemini uses fs-level MCP strip handled in core.run)
     return []
 
 

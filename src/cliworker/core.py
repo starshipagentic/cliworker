@@ -1,4 +1,4 @@
-"""Core subprocess invocation + fallback chain."""
+"""Core subprocess invocation + chained use."""
 from __future__ import annotations
 
 import os
@@ -223,7 +223,7 @@ def use(
     specs_list = [get_spec(s) if isinstance(s, str) else s for s in specs]
     results: list[CLIResult] = []
 
-    # Force every spec to get a real attempt this call — the fallback chain
+    # Force every spec to get a real attempt this call — a chained `use`
     # is explicit intent, not something skip-cache should short-circuit.
     if free_first:
         for spec in specs_list:
@@ -250,59 +250,3 @@ def use(
     return results
 
 
-# Back-compat aliases — original names, unchanged signatures.
-def run_cli(
-    spec: CLISpec | str,
-    prompt: str | None = None,
-    *,
-    stdin_content: str | None = None,
-    strip_keys: bool = False,
-    timeout_s: int = DEFAULT_TIMEOUT,
-    skip_cache_check: bool = True,
-    cwd: str | Path | None = None,
-) -> CLIResult:
-    """Back-compat alias for `run`. New code should use `run`."""
-    return run(
-        spec, prompt,
-        stdin_content=stdin_content, strip_keys=strip_keys,
-        timeout_s=timeout_s, skip_cache_check=skip_cache_check, cwd=cwd,
-    )
-
-
-def run_with_fallback(
-    specs: Iterable[CLISpec | str],
-    prompt: str | None = None,
-    *,
-    stdin_content: str | None = None,
-    strip_keys_first: bool = True,
-    retry_with_keys: bool = True,
-    timeout_s: int = DEFAULT_TIMEOUT,
-    cwd: str | Path | None = None,
-) -> list[CLIResult]:
-    """Back-compat alias for `use()`. New code should use `use()`."""
-    return use(
-        specs, prompt,
-        stdin_content=stdin_content,
-        free_first=strip_keys_first, retry_paid=retry_with_keys,
-        timeout_s=timeout_s, cwd=cwd,
-    )
-
-
-# Back-compat alias for the previous name (fallback → use)
-def fallback(
-    specs: Iterable[CLISpec | str],
-    prompt: str | None = None,
-    *,
-    stdin_content: str | None = None,
-    free_first: bool = True,
-    retry_paid: bool = True,
-    timeout_s: int = DEFAULT_TIMEOUT,
-    cwd: str | Path | None = None,
-) -> list[CLIResult]:
-    """Back-compat alias for `use()`. Renamed in 0.3.0 — old code still works."""
-    return use(
-        specs, prompt,
-        stdin_content=stdin_content,
-        free_first=free_first, retry_paid=retry_paid,
-        timeout_s=timeout_s, cwd=cwd,
-    )

@@ -133,7 +133,6 @@ results = use(
 )
 ```
 
-The old name `fallback()` still works as a back-compat alias.
 
 ### `CLIResult` — what comes back
 
@@ -185,7 +184,7 @@ r = run(
 
 ```python
 # Prefer free tier on all, only burn paid credits as last resort.
-results = fallback(
+results = use(
     ["gemini", "ollama", "claude", "codex"],   # order = preference
     "brief summary of the last commit",
     free_first=True,                            # pass 1: no API keys
@@ -304,7 +303,7 @@ The stripped env vars are defined per-spec:
 | gemini | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
 | ollama | (none — local, no subscription concept) |
 
-`fallback()` uses this in its pass 1 by default (`free_first=True`), then retries with keys intact on pass 2 (`retry_paid=True`). Maximizes free-tier usage without losing reliability.
+`use()` runs pass 1 by default with keys stripped (`free_first=True`), then retries each with keys intact on pass 2 (`retry_paid=True`). Maximizes free-tier usage without losing reliability.
 
 ### Skip-cache
 
@@ -354,11 +353,6 @@ from cliworker import (
     get_spec,       # look up spec by CLI name + optional overrides
     KNOWN_CLIS,     # dict of built-in specs
 )
-
-# Back-compat aliases (older names, same signatures):
-from cliworker import fallback           # old name for `use`
-from cliworker import run_cli            # old name for `run`
-from cliworker import run_with_fallback  # old name for `use`
 ```
 
 Sub-modules worth knowing about:
@@ -394,7 +388,7 @@ A: Easy to add — build your own `CLISpec` and call `run(spec, prompt)`. PRs we
 
 ## Roadmap
 
-- [ ] async API (`arun`, `afallback`)
+- [ ] async API (`arun`, `ause`)
 - [ ] `cliworker doctor --probe` comparison table showing fast-flag impact per CLI
 - [ ] streaming mode (subprocess `stdout` line-by-line) for long responses
 - [ ] more CLIs in `KNOWN_CLIS`: aider, continue, sgpt

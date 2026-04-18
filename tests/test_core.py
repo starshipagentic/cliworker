@@ -1,11 +1,11 @@
-"""Tests for run_cli + run_with_fallback using monkeypatched subprocess."""
+"""Tests for run + use using monkeypatched subprocess."""
 from __future__ import annotations
 
 from unittest.mock import patch
 
 import subprocess
 
-from cliworker import CLIResult, run_cli, run_with_fallback
+from cliworker import CLIResult, run, use
 from cliworker.registry import get_spec
 
 
@@ -15,39 +15,39 @@ def _fake_completed(returncode: int, stdout: str = "", stderr: str = ""):
     )
 
 
-def test_run_cli_success(monkeypatch):
+def test_run_success(monkeypatch):
     monkeypatch.setattr("cliworker.core._which", lambda b: "/fake/" + b)
     monkeypatch.setattr(
         "cliworker.core.subprocess.run",
         lambda *a, **k: _fake_completed(0, stdout="hello from claude", stderr=""),
     )
-    result = run_cli("claude", prompt="hi", skip_cache_check=False)
+    result = run("claude", prompt="hi", skip_cache_check=False)
     assert result.ok is True
     assert result.stdout == "hello from claude"
     assert result.returncode == 0
     assert result.spec.cli == "claude"
 
 
-def test_run_cli_binary_missing(monkeypatch):
+def test_run_binary_missing(monkeypatch):
     monkeypatch.setattr("cliworker.core._which", lambda b: None)
-    result = run_cli("claude", prompt="hi", skip_cache_check=False)
+    result = run("claude", prompt="hi", skip_cache_check=False)
     assert result.ok is False
     assert result.skipped_reason == "not_on_path"
 
 
-def test_run_cli_timeout(monkeypatch):
+def test_run_timeout(monkeypatch):
     monkeypatch.setattr("cliworker.core._which", lambda b: "/fake/" + b)
 
     def raise_timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="fake", timeout=5)
 
     monkeypatch.setattr("cliworker.core.subprocess.run", raise_timeout)
-    result = run_cli("claude", prompt="hi", skip_cache_check=False, timeout_s=5)
+    result = run("claude", prompt="hi", skip_cache_check=False, timeout_s=5)
     assert result.ok is False
     assert "timeout" in result.stderr.lower()
 
 
-def test_run_cli_strip_keys_removes_env_var(monkeypatch):
+def test_run_strip_keys_removes_env_var(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
     monkeypatch.setattr("cliworker.core._which", lambda b: "/fake/" + b)
     captured = {}
@@ -57,11 +57,11 @@ def test_run_cli_strip_keys_removes_env_var(monkeypatch):
         return _fake_completed(0, stdout="ok")
 
     monkeypatch.setattr("cliworker.core.subprocess.run", fake_run)
-    run_cli("claude", prompt="hi", skip_cache_check=False, strip_keys=True)
+    run("claude", prompt="hi", skip_cache_check=False, strip_keys=True)
     assert "ANTHROPIC_API_KEY" not in captured["env"]
 
 
-def test_run_cli_strip_keys_false_keeps_env_var(monkeypatch):
+def test_run_strip_keys_false_keeps_env_var(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
     monkeypatch.setattr("cliworker.core._which", lambda b: "/fake/" + b)
     captured = {}
@@ -71,11 +71,11 @@ def test_run_cli_strip_keys_false_keeps_env_var(monkeypatch):
         return _fake_completed(0, stdout="ok")
 
     monkeypatch.setattr("cliworker.core.subprocess.run", fake_run)
-    run_cli("claude", prompt="hi", skip_cache_check=False, strip_keys=False)
+    run("claude", prompt="hi", skip_cache_check=False, strip_keys=False)
     assert captured["env"].get("ANTHROPIC_API_KEY") == "sk-secret"
 
 
-def test_run_with_fallback_first_success_short_circuits(monkeypatch):
+def test_use_first_success_short_circuits(monkeypatch):
     monkeypatch.setattr("cliworker.core._which", lambda b: "/fake/" + b)
     # Isolate from any skip-cache state on the dev machine
     monkeypatch.setattr("cliworker.core.is_skipped", lambda name, **kw: False)
@@ -87,7 +87,7 @@ def test_run_with_fallback_first_success_short_circuits(monkeypatch):
         return _fake_completed(0, stdout="first")
 
     monkeypatch.setattr("cliworker.core.subprocess.run", fake_run)
-    results = run_with_fallback(
+    results = use(
         ["claude", "codex", "gemini"], prompt="hi",
     )
     # Only one subprocess should have been spawned despite 3 specs
@@ -98,7 +98,7 @@ def test_run_with_fallback_first_success_short_circuits(monkeypatch):
     assert len(results) == 1
 
 
-def test_run_with_fallback_chains_through_failures(monkeypatch):
+def test_use_chains_through_failures(monkeypatch):
     monkeypatch.setattr("cliworker.core._which", lambda b: "/fake/" + b)
     monkeypatch.setattr("cliworker.core.is_skipped", lambda name, **kw: False)
     calls = []
@@ -115,9 +115,9 @@ def test_run_with_fallback_chains_through_failures(monkeypatch):
         return _fake_completed(1, stderr=f"{binary} failed")
 
     monkeypatch.setattr("cliworker.core.subprocess.run", fake_run)
-    results = run_with_fallback(
+    results = use(
         ["claude", "codex", "gemini"], prompt="hi",
-        strip_keys_first=True, retry_with_keys=False,  # only one pass
+        free_first=True, retry_paid=False,  # only one pass
     )
     # Should have tried all three
     assert len(results) == 3
@@ -125,7 +125,7 @@ def test_run_with_fallback_chains_through_failures(monkeypatch):
     assert results[-1].stdout == "gemini-ok"
 
 
-def test_run_cli_uses_skip_cache(monkeypatch, tmp_path):
+def test_run_uses_skip_cache(monkeypatch, tmp_path):
     # Seed cache with claude as broken
     from cliworker import skipcache
 
@@ -133,6 +133,6 @@ def test_run_cli_uses_skip_cache(monkeypatch, tmp_path):
     # Patch the import location used inside core
     monkeypatch.setattr("cliworker.core.is_skipped", lambda name, **kw: name == "claude")
 
-    result = run_cli("claude", prompt="hi")
+    result = run("claude", prompt="hi")
     assert result.ok is False
     assert result.skipped_reason == "skip_cache"

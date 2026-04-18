@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cliworker"
-version = "0.3.1"
-description = "Call claude / codex / gemini / ollama CLIs fast and reliably — speed flags, MCP stripping, fallback chains, skip-cache."
+version = "0.4.0"
+description = "Call claude / codex / gemini / ollama CLIs fast and reliably — speed flags, MCP stripping, chained use, skip-cache."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
