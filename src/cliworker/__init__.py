@@ -37,7 +37,7 @@ from cliworker.core import (
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     # Primary API
