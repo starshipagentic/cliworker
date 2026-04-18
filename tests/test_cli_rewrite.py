@@ -1,40 +1,40 @@
-"""Tests for argv preprocessor + bare-prompt dispatch."""
+"""Tests for argv preprocessor + bare-prompt dispatch (v0.7.0+ `run` keyword)."""
 from __future__ import annotations
 
 from click.testing import CliRunner
 
-from cliworker.cli import _rewrite_use_keyword, main
+from cliworker.cli import _rewrite_run_keyword, main
 
 
-def test_rewrite_simple_use():
-    argv = ['what is TCP?', 'use', 'claude']
-    assert _rewrite_use_keyword(argv) == ['what is TCP?', '--use', 'claude']
+def test_rewrite_simple_run():
+    argv = ['what is TCP?', 'run', 'claude']
+    assert _rewrite_run_keyword(argv) == ['what is TCP?', '--run', 'claude']
 
 
-def test_rewrite_multi_cli_use():
-    argv = ['do stuff', 'use', 'claude', 'gemini', 'ollama']
-    assert _rewrite_use_keyword(argv) == ['do stuff', '--use', 'claude,gemini,ollama']
+def test_rewrite_multi_cli_run():
+    argv = ['do stuff', 'run', 'claude', 'gemini', 'ollama']
+    assert _rewrite_run_keyword(argv) == ['do stuff', '--run', 'claude,gemini,ollama']
 
 
-def test_rewrite_use_with_following_flag():
-    argv = ['hi', 'use', 'claude', 'gemini', '--verbose']
-    assert _rewrite_use_keyword(argv) == ['hi', '--use', 'claude,gemini', '--verbose']
+def test_rewrite_run_with_following_flag():
+    argv = ['hi', 'run', 'claude', 'gemini', '--fast']
+    assert _rewrite_run_keyword(argv) == ['hi', '--run', 'claude,gemini', '--fast']
 
 
-def test_rewrite_use_with_nothing_after_is_passthrough():
-    """If 'use' appears but no CLI names follow, leave it — probably part of the prompt."""
-    argv = ['how do I use grep']  # 'use' embedded, not a bare arg
-    assert _rewrite_use_keyword(argv) == argv
+def test_rewrite_run_with_nothing_after_is_passthrough():
+    """If 'run' appears but no CLI names follow, leave it — might be a prompt containing 'run'."""
+    argv = ['how do I run grep']  # 'run' embedded in quoted prompt
+    assert _rewrite_run_keyword(argv) == argv
 
 
-def test_rewrite_use_with_only_flag_after():
-    argv = ['hi', 'use', '--verbose']
-    assert _rewrite_use_keyword(argv) == argv
+def test_rewrite_run_with_only_flag_after():
+    argv = ['hi', 'run', '--verbose']
+    assert _rewrite_run_keyword(argv) == argv
 
 
-def test_rewrite_no_use_keyword():
+def test_rewrite_no_run_keyword():
     argv = ['hi', '--model', 'sonnet']
-    assert _rewrite_use_keyword(argv) == argv
+    assert _rewrite_run_keyword(argv) == argv
 
 
 def test_help_shows_simple_invocation_examples():
@@ -42,7 +42,7 @@ def test_help_shows_simple_invocation_examples():
     result = runner.invoke(main, ['--help'])
     assert result.exit_code == 0
     assert 'cliworker "what is TCP?"' in result.output
-    assert 'use claude gemini' in result.output
+    assert 'run claude gemini' in result.output
 
 
 def test_info_subcommand_still_works():
@@ -57,20 +57,17 @@ def test_doctor_subcommand_still_works():
     runner = CliRunner()
     result = runner.invoke(main, ['doctor'])
     assert result.exit_code == 0
-    # Should show ✓ or ✗ for each known CLI
     assert 'claude' in result.output
 
 
 def test_bare_prompt_without_clis_installed_exits_gracefully(tmp_path, monkeypatch):
     """If no CLIs are installed, first-run should fail fast with install hints."""
-    import cliworker.state as st
+    from pathlib import Path
 
     fake_config = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_config))
-    # Patch detect to return nothing installed
-    import cliworker.firstrun as fr
+
     from cliworker.detect import CLIPresence
-    from pathlib import Path
 
     def fake_detect():
         return {
@@ -85,9 +82,7 @@ def test_bare_prompt_without_clis_installed_exits_gracefully(tmp_path, monkeypat
 
     runner = CliRunner()
     result = runner.invoke(main, ['hello'])
-    # Should exit non-zero and print install hints or banner
-    assert result.exit_code != 0, f"expected nonzero exit; got {result.exit_code}, output={result.output!r}"
-    # Anything CLIWORKER-banner, install-hint, or install-instruction related
+    assert result.exit_code != 0, f"expected nonzero exit; got {result.exit_code}"
     haystack = result.output.lower()
     assert any(
         needle in haystack

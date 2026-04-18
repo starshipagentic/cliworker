@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.7.0 — run/run_fast API, default = full mode (breaking)
+
+Biggest API reshape since 0.1.0. Simpler shape, different default.
+
+### Python API (breaking)
+
+`use()` is gone. `run()` now accepts variadic `*clis` and always returns
+a list:
+
+    run("hi")                               # default chain from state
+    run("hi", "claude")                     # one CLI, returns [CLIResult]
+    run("hi", "claude", "codex")            # chain
+    run("hi", *my_list)                     # spread works naturally
+    run("hi", "claude", paid_ok=True)
+    run_fast("hi", "claude")                # sugar for fast=True
+
+Prompt is always the first positional — resolves the run()/use() overlap.
+
+### CLI (breaking)
+
+`use` keyword is now `run`. `--use`/`--llm` flags are gone; `--run` is the
+flag form (though the positional word is usually what you'll type).
+
+    cliworker "hi"                          full mode, default chain
+    cliworker "hi" --fast                   fast mode
+    cliworker "hi" run claude               specific CLI, full mode
+    cliworker "hi" run claude gemini        chain
+    cliworker "hi" run claude --fast        specific CLI, fast mode
+    cliworker --run claude,gemini "hi"      script-friendly flag form
+
+### Default mode flipped: full, not fast
+
+Previously `cliworker "hi"` applied CLAUDE_FAST flags by default. Now the
+default is full mode — matching how `claude -p` behaves without cliworker,
+so orchestrators that want the full MCP/tool environment get it by default.
+
+`--fast` (CLI) / `run_fast()` (Python) opts into the stripped-down path for
+summarization, quick answers, etc. The CLAUDE_FAST flags (`--tools "" `,
+`--strict-mcp-config`, `--no-chrome`, `--no-session-persistence`) only land
+when you ask for them.
+
+Registry `CLISpec.fast` defaults for claude and gemini flipped from True
+to False to reflect the new default.
+
+### Tests
+
+78 green. Includes:
+- E2E of `cliworker "hi" run claude gemini` dispatch
+- E2E of `--fast` flag → `fast=True` pass-through
+- E2E of `doctor --probe` and `doctor --probe --fast`
+- `run_fast` vs `run` default behavior on argv (flags present vs absent)
+- `run()` with empty `*clis` falls back to state default chain
+- Ollama invalid-model-name error rewrite still works
+
 ## 0.6.0 — config/cache at ~/.cliworker/ (matches peer LLM CLIs) (breaking)
 
 Default path changed. cliworker's state + cache now live at

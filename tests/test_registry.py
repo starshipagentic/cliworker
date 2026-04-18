@@ -4,19 +4,29 @@ from __future__ import annotations
 from cliworker.registry import KNOWN_CLIS, get_spec
 
 
-def test_claude_argv_includes_fast_flags_and_positional_prompt():
+def test_claude_default_argv_is_full_mode_no_fast_flags():
+    """v0.7.0: default claude spec has fast=False (full mode). No CLAUDE_FAST
+    flags in argv unless fast=True is explicitly set."""
     spec = get_spec("claude")
     argv = spec.build_argv("hello world")
     assert argv[0] == "claude"
     assert argv[1] == "-p"
-    # Fast flags present
+    # Default is full mode — fast flags should NOT be in argv
+    assert "--strict-mcp-config" not in argv
+    assert "--no-chrome" not in argv
+    assert "--no-session-persistence" not in argv
+    # Prompt is last positional
+    assert argv[-1] == "hello world"
+
+
+def test_claude_argv_with_fast_true_includes_fast_flags():
+    spec = get_spec("claude", fast=True)
+    argv = spec.build_argv("hello world")
     assert "--strict-mcp-config" in argv
     assert '{"mcpServers":{}}' in argv
     assert "--no-chrome" in argv
     assert "--no-session-persistence" in argv
     assert "--tools" in argv
-    # Prompt is last positional
-    assert argv[-1] == "hello world"
 
 
 def test_claude_argv_with_model_passes_model_flag():

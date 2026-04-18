@@ -1,11 +1,13 @@
-"""Tests for paid_ok semantics: default-off, True, list, with use()."""
+"""Tests for paid_ok semantics with the new run() / run_fast() API.
+
+Public API:
+    run(prompt, *clis, paid_ok=None|True|list[str], ...) -> list[CLIResult]
+"""
 from __future__ import annotations
 
 import subprocess
-from unittest.mock import patch
 
-from cliworker import use
-from cliworker.registry import get_spec
+from cliworker import run
 
 
 def _fake_completed(rc: int, stdout: str = "", stderr: str = ""):
@@ -19,11 +21,13 @@ def _track_calls(tracker):
         argv = kwargs.get("args") or args[0]
         env = kwargs.get("env", {})
         cli_name = argv[0]
-        # Claude uses ANTHROPIC_API_KEY
-        key_var = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "gemini": "GOOGLE_API_KEY"}.get(cli_name)
+        key_var = {
+            "claude": "ANTHROPIC_API_KEY",
+            "codex": "OPENAI_API_KEY",
+            "gemini": "GOOGLE_API_KEY",
+        }.get(cli_name)
         has_key = key_var is not None and key_var in env
         tracker.append((cli_name, has_key))
-        # Fail every call so both passes can run
         return _fake_completed(1, stderr=f"{cli_name} intentional fail")
 
     return fake_run
@@ -38,7 +42,7 @@ def test_paid_ok_none_only_runs_free_pass(monkeypatch):
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr("cliworker.core.subprocess.run", _track_calls(calls))
 
-    results = use(["claude", "codex"], "hi", paid_ok=None)
+    run("hi", "claude", "codex", paid_ok=None)
 
     # Exactly 2 attempts (claude + codex, pass 1 only) — no paid pass.
     assert len(calls) == 2
@@ -54,7 +58,7 @@ def test_paid_ok_true_runs_paid_pass_for_all(monkeypatch):
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr("cliworker.core.subprocess.run", _track_calls(calls))
 
-    results = use(["claude", "codex"], "hi", paid_ok=True)
+    run("hi", "claude", "codex", paid_ok=True)
 
     # 4 attempts: claude free, codex free, claude paid, codex paid
     assert len(calls) == 4
@@ -74,7 +78,7 @@ def test_paid_ok_list_restricts_paid_pass(monkeypatch):
     monkeypatch.setattr("cliworker.core.subprocess.run", _track_calls(calls))
 
     # Paid fallback allowed ONLY for claude, not codex.
-    results = use(["claude", "codex"], "hi", paid_ok=["claude"])
+    run("hi", "claude", "codex", paid_ok=["claude"])
 
     # 3 attempts: claude free, codex free, claude paid (no codex paid)
     assert len(calls) == 3
@@ -91,7 +95,7 @@ def test_paid_ok_false_behaves_like_none(monkeypatch):
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr("cliworker.core.subprocess.run", _track_calls(calls))
 
-    results = use(["claude"], "hi", paid_ok=False)
+    run("hi", "claude", paid_ok=False)
 
     assert len(calls) == 1  # one free attempt, no paid
     assert calls[0][1] is False

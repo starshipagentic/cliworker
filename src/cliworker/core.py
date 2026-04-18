@@ -1,12 +1,24 @@
-"""Core subprocess invocation + chained use."""
+"""Core subprocess invocation + chained runs.
+
+Public API (two functions):
+
+    run(prompt, *clis, fast=None, paid_ok=None, ...)       -> list[CLIResult]
+    run_fast(prompt, *clis, **kwargs)                      -> list[CLIResult]
+
+`run()` tries the given CLIs in order, returning the full list of attempts
+(first success stops the chain). With no CLIs passed, falls back to the
+default chain from ~/.cliworker/state.json.
+
+`run_fast()` is a one-line wrapper that forces `fast=True`.
+"""
 from __future__ import annotations
 
 import os
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from cliworker.fastflags import gemini_stripped_mcp
 from cliworker.registry import CLISpec, get_spec
@@ -49,55 +61,110 @@ def _which(binary: str) -> Optional[str]:
     return shutil.which(binary)
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def run(
-    spec: CLISpec | str,
-    prompt: str | None = None,
-    *,
-    model: str | None = None,
+    prompt: str,
+    *clis: str | CLISpec,
     fast: bool | None = None,
-    stdin_content: str | None = None,
-    strip_keys: bool = False,
+    paid_ok: bool | list[str] | None = None,
     timeout_s: int = DEFAULT_TIMEOUT,
-    skip_cache_check: bool = True,
+    stdin_content: str | None = None,
     cwd: str | Path | None = None,
-) -> CLIResult:
-    """Invoke ONE CLI subprocess, return a CLIResult.
+) -> list[CLIResult]:
+    """Run a prompt against one or more CLIs, in order. Returns all attempts
+    (short-circuits on the first success).
 
-    Friendly call-site shortcuts:
-        run("claude", "hello")                        # simplest
-        run("claude", "hello", model="sonnet")
-        run("gemini", "hi", fast=False)               # disable speed flags
-        run("claude", "summarize:", stdin_content=long_text)
+    Usage:
+        run("hi")                                   # default chain from state.json
+        run("hi", "claude")                         # one CLI
+        run("hi", "claude", "codex")                # two CLIs in order
+        run("hi", CLISpec(cli="claude", fast=True)) # custom spec
+        run("hi", *saved_list)                      # spread a variable
 
-    When `spec` is a string, it's looked up in KNOWN_CLIS. `model` and `fast`
-    override the spec's defaults without requiring a dataclass-replace dance.
-    For anything exotic, pass a pre-built CLISpec instead of a string.
+    Kwargs:
+        fast        None = respect each spec's own fast field (default)
+                    True  = force fast mode on every spec (strip CLAUDE_FAST /
+                            gemini MCP)
+                    False = force full mode on every spec
+        paid_ok     None (default) = free/subscription only, never paid API
+                    True           = paid OK for every CLI in the chain
+                    list[str]      = paid OK only for those CLI names
+        timeout_s   Seconds per CLI before giving up.
+        stdin_content  Optional bulk content piped via stdin. Keeps argv clean.
+        cwd         Working directory for the subprocess.
+
+    If `clis` is empty, uses the default chain from ~/.cliworker/state.json.
+    Returns an empty list only if there's no state and no explicit CLIs.
     """
-    # String-name → spec with optional overrides
-    if isinstance(spec, str):
-        overrides = {}
-        if model is not None:
-            overrides["model"] = model
-        if fast is not None:
-            overrides["fast"] = fast
-        spec = get_spec(spec, **overrides)
-    elif model is not None or fast is not None:
-        # spec is already a CLISpec; apply overrides
-        from dataclasses import replace
+    # Default-chain fallback when no CLIs are passed
+    if not clis:
+        from cliworker.state import default_chain
 
-        overrides = {}
-        if model is not None:
-            overrides["model"] = model
-        if fast is not None:
-            overrides["fast"] = fast
-        spec = replace(spec, **overrides)
+        chain = default_chain()
+        if not chain:
+            return []
+        clis = tuple(chain)
 
-    return _run_impl(
-        spec, prompt,
-        stdin_content=stdin_content, strip_keys=strip_keys,
-        timeout_s=timeout_s, skip_cache_check=skip_cache_check, cwd=cwd,
-    )
+    # Resolve strings to specs
+    specs_list = [get_spec(c) if isinstance(c, str) else c for c in clis]
 
+    # Apply `fast` override if caller specified it
+    if fast is not None:
+        specs_list = [replace(s, fast=fast) for s in specs_list]
+
+    results: list[CLIResult] = []
+
+    # Pass 1: every spec with env API keys STRIPPED (subscription mode)
+    for spec in specs_list:
+        r = _run_impl(
+            spec, prompt, stdin_content=stdin_content,
+            strip_keys=True, timeout_s=timeout_s, cwd=cwd,
+            skip_cache_check=False,
+        )
+        results.append(r)
+        if r.ok:
+            return results
+
+    # Pass 2: paid-API retry — only for specs the caller authorized
+    if paid_ok:
+        paid_specs = [
+            s for s in specs_list
+            if paid_ok is True or (isinstance(paid_ok, list) and s.cli in paid_ok)
+        ]
+        for spec in paid_specs:
+            r = _run_impl(
+                spec, prompt, stdin_content=stdin_content,
+                strip_keys=False, timeout_s=timeout_s, cwd=cwd,
+                skip_cache_check=False,
+            )
+            results.append(r)
+            if r.ok:
+                return results
+
+    return results
+
+
+def run_fast(prompt: str, *clis: str | CLISpec, **kwargs) -> list[CLIResult]:
+    """Shortcut for `run(..., fast=True)`.
+
+    Forces every spec in the chain into fast mode (CLAUDE_FAST flags for
+    claude, gemini MCP strip for gemini, no-op for codex/ollama).
+    All other kwargs (`paid_ok`, `timeout_s`, `stdin_content`, `cwd`)
+    behave identically to `run()`.
+
+    Usage:
+        run_fast("summarize:", "claude", stdin_content=big_text)
+        run_fast("hi", "claude", "codex", paid_ok=["claude"])
+    """
+    return run(prompt, *clis, fast=True, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Internal — single-CLI subprocess invocation
+# ---------------------------------------------------------------------------
 
 def _run_impl(
     spec: CLISpec,
@@ -109,18 +176,8 @@ def _run_impl(
     skip_cache_check: bool,
     cwd: str | Path | None,
 ) -> CLIResult:
-    """Invoke one CLI subprocess, return a CLIResult.
-
-    Args:
-      spec             CLISpec or string name (looked up in KNOWN_CLIS).
-      prompt           Instruction string. Passed per spec.prompt_flag.
-      stdin_content    Optional bulk content piped as stdin. Recommended for
-                       long transcripts — keeps argv clean.
-      strip_keys       Force subscription mode by stripping env keys from spec.env_strip.
-      timeout_s        Subprocess timeout in seconds.
-      skip_cache_check If True (default), bail early if cli is in skip-cache.
-      cwd              Working directory for the subprocess.
-    """
+    """Invoke one CLI subprocess, return a CLIResult. Internal only — callers
+    should use `run()` which handles chains + default chain + paid_ok."""
     if skip_cache_check and is_skipped(spec.cli):
         return CLIResult(
             spec=spec, ok=False, stdout="", stderr=f"{spec.cli} is in skip-cache (recent failure)",
@@ -138,8 +195,6 @@ def _run_impl(
     argv = spec.build_argv(prompt)
     env = _build_env(spec, strip_keys)
 
-    # Gemini needs MCP strip/restore at fs level; wrap in context manager.
-    # No-op for other CLIs.
     def _invoke() -> CLIResult:
         start = time.monotonic()
         try:
@@ -183,6 +238,8 @@ def _run_impl(
                 skipped_reason="not_on_path",
             )
 
+    # Gemini needs MCP strip/restore at fs level when fast; wrap with it.
+    # No-op for other CLIs.
     if spec.cli == "gemini" and spec.fast:
         with gemini_stripped_mcp():
             result = _invoke()
@@ -194,73 +251,3 @@ def _run_impl(
         mark_broken(spec.cli)
 
     return result
-
-
-def use(
-    specs: Iterable[CLISpec | str],
-    prompt: str | None = None,
-    *,
-    stdin_content: str | None = None,
-    paid_ok: bool | list[str] | None = None,
-    timeout_s: int = DEFAULT_TIMEOUT,
-    cwd: str | Path | None = None,
-) -> list[CLIResult]:
-    """Use a list of CLIs in order — try the first, fall through to later
-    ones only if earlier ones fail. Returns the full list of attempts; the
-    first success stops the chain.
-
-    Example:
-        results = use(["claude", "codex", "gemini"], "summarize this")
-        first_ok = next((r for r in results if r.ok), None)
-        if first_ok:
-            print(first_ok.stdout)
-
-    Free-first, paid-only-if-you-said-so:
-
-    Pass 1 — every spec is tried with its env_strip keys REMOVED (free /
-    subscription mode). For claude/codex/gemini this forces subscription
-    use instead of burning paid API credits.
-
-    Pass 2 — only runs for specs you explicitly authorized via `paid_ok`:
-      paid_ok=None     (default)  never use paid API. Free/subscription only.
-      paid_ok=False              same as None.
-      paid_ok=True               paid OK for every CLI in `specs`.
-      paid_ok=["claude","codex"] paid OK only for those names (string match
-                                 against spec.cli).
-
-    Returns all attempts in order, short-circuiting at the first success.
-    If every spec fails pass 1 AND no specs are paid_ok, pass 2 doesn't run.
-    """
-    specs_list = [get_spec(s) if isinstance(s, str) else s for s in specs]
-    results: list[CLIResult] = []
-
-    # Pass 1: free / subscription mode for every spec
-    for spec in specs_list:
-        r = _run_impl(
-            spec, prompt, stdin_content=stdin_content,
-            strip_keys=True, timeout_s=timeout_s, cwd=cwd,
-            skip_cache_check=False,
-        )
-        results.append(r)
-        if r.ok:
-            return results
-
-    # Pass 2: paid-API retry — only for authorized specs
-    if paid_ok:
-        paid_specs = [
-            spec for spec in specs_list
-            if paid_ok is True or (isinstance(paid_ok, list) and spec.cli in paid_ok)
-        ]
-        for spec in paid_specs:
-            r = _run_impl(
-                spec, prompt, stdin_content=stdin_content,
-                strip_keys=False, timeout_s=timeout_s, cwd=cwd,
-                skip_cache_check=False,
-            )
-            results.append(r)
-            if r.ok:
-                return results
-
-    return results
-
-

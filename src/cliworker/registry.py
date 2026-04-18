@@ -94,7 +94,7 @@ KNOWN_CLIS: dict[str, CLISpec] = {
     "claude": CLISpec(
         cli="claude",
         prompt_flag="positional",
-        fast=True,
+        fast=False,                  # v0.7.0: full by default. opt in via fast=True or --fast
         env_strip=["ANTHROPIC_API_KEY"],
     ),
     "codex": CLISpec(
@@ -110,7 +110,7 @@ KNOWN_CLIS: dict[str, CLISpec] = {
         prompt_flag="flag",          # gemini uses -p <value>
         prompt_flag_name="-p",
         model_flag="-m",
-        fast=True,                   # triggers gemini MCP strip-and-restore in core
+        fast=False,                  # v0.7.0: full by default. opt in via fast=True
         env_strip=["GOOGLE_API_KEY", "GEMINI_API_KEY"],
     ),
     "ollama": CLISpec(

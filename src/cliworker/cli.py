@@ -1,20 +1,24 @@
 """cliworker CLI — natural-language-ish invocation.
 
 Primary shape:
-    cliworker "what is TCP?"                    # default chain
-    cliworker "what is TCP?" use claude         # one CLI
-    cliworker "what is TCP?" use claude gemini  # chain in stated order
-    cliworker --use claude,gemini "what is TCP?"  # flag form
+    cliworker "what is TCP?"                       default chain, full mode
+    cliworker "what is TCP?" --fast                default chain, fast mode
+    cliworker "what is TCP?" run claude            one CLI, full mode
+    cliworker "what is TCP?" run claude gemini     chain, full mode
+    cliworker "what is TCP?" run claude --fast     one CLI, fast mode
+    cliworker --run claude,gemini "what is TCP?"   flag form (scripts)
 
 Subcommands (diagnostic, no prompt):
     cliworker doctor
     cliworker info [cli]
     cliworker skip-cache [--clear ...]
-    cliworker setup      (planned — walk through missing CLI installs)
+    cliworker setup
 
-Library equivalents for Python programs:
-    run("claude", "hi")
-    use(["claude", "codex"], "hi")
+Library equivalents:
+    from cliworker import run, run_fast
+    run("hi")                                   # default chain
+    run("hi", "claude", "codex")                # explicit chain
+    run_fast("hi", "claude")                    # fast mode
 """
 from __future__ import annotations
 
@@ -22,33 +26,34 @@ import sys
 
 import click
 
-from cliworker import __version__, run, use
+from cliworker import __version__, run
 from cliworker.detect import detect
 from cliworker.registry import KNOWN_CLIS, get_spec
 from cliworker import firstrun, state
 
 
-SUBCOMMAND_NAMES = {"doctor", "info", "skip-cache", "setup", "help"}
-
-
 # ---------------------------------------------------------------------------
-# argv preprocessing: turn `... use cli1 cli2 [...]` into `... --use cli1,cli2 ...`
+# argv preprocessing: turn `... run cli1 cli2 [...]` into `... --run cli1,cli2 ...`
 # ---------------------------------------------------------------------------
 
-def _rewrite_use_keyword(argv: list[str]) -> list[str]:
-    """If 'use' appears as a bare arg, convert the following cli-name tokens
-    into a single `--use cli1,cli2` option.
+def _rewrite_run_keyword(argv: list[str]) -> list[str]:
+    """If 'run' appears as a bare arg (and NOT as a registered subcommand),
+    convert the following cli-name tokens into a single `--run cli1,cli2` option.
 
     Rules:
-      * `use` must appear as its own argv token (not embedded in a longer word).
-      * Everything after `use` that does NOT start with `-` is a CLI name,
+      * `run` must appear as its own argv token (not embedded in a longer word).
+      * `run` must NOT be the first positional arg (that's how you'd run
+        `cliworker run ...` if we ever had such a subcommand — we don't).
+      * Everything after `run` that does NOT start with `-` is a CLI name,
         until the next `-flag` or end of argv.
-      * If no CLI names follow `use`, leave argv unchanged (probably a
-        prompt containing the literal word 'use').
+      * If no CLI names follow `run`, leave argv unchanged (probably a
+        prompt containing the literal word 'run').
     """
-    if "use" not in argv:
+    if "run" not in argv:
         return argv
-    idx = argv.index("use")
+    idx = argv.index("run")
+    # If 'run' is the very first positional, it might be misread — but we
+    # don't have a `run` subcommand, so treat it as the connector keyword.
     clis: list[str] = []
     i = idx + 1
     while i < len(argv) and not argv[i].startswith("-"):
@@ -57,40 +62,52 @@ def _rewrite_use_keyword(argv: list[str]) -> list[str]:
     if not clis:
         return argv
     rest = argv[i:]
-    return argv[:idx] + ["--use", ",".join(clis)] + rest
+    return argv[:idx] + ["--run", ",".join(clis)] + rest
 
 
 # ---------------------------------------------------------------------------
-# Default command — handles bare prompt invocation
+# Main group
 # ---------------------------------------------------------------------------
 
 HELP_EPILOG = """\
 \b
 Shell — the natural shape
-  cliworker "what is TCP?"                     default chain, free only
-  cliworker "summarize:" < file.txt            stdin as bulk content
-  cliworker "hi" use claude                    one specific CLI
-  cliworker "hi" use claude gemini             chain in stated order
-  cliworker --use claude,gemini "hi"           flag form (for scripts)
-  cliworker --llm claude,gemini "hi"           --llm aliases --use
+  cliworker "what is TCP?"                     default chain, full mode
+  cliworker "what is TCP?" --fast              default chain, fast mode
+  cliworker "hi" run claude                    one CLI, full mode
+  cliworker "hi" run claude gemini             chain in stated order
+  cliworker "hi" run claude --fast             one CLI, fast mode
+  cliworker --run claude,gemini "hi"           flag form (scripts)
+  cliworker "summarize:" < file.txt --fast     stdin content, fast mode
 
 \b
-Options for any bare-prompt invocation
-  --use, --llm TEXT    CLI names to try (comma-separated), in order.
-  -m, --model TEXT     Model override (sonnet, gemini-2.5-flash, llama3.1).
+Options on any bare-prompt invocation
+  --run TEXT           CLI names to try (comma-separated), in order.
+  --fast               Strip MCP / tools / chrome startup — ~18s → ~4s on claude.
+                       Default is full mode (everything loaded).
+  -m, --model TEXT     Model override (sonnet, gemini-2.5-flash, gemma3:4b).
   --paid-ok TEXT       Allow paid API fallback. 'all' or 'claude,codex,...'.
-                       Default: never. cliworker stays free-only unless you
-                       opt in here or persistently via state.json.
+                       Default: never. Stays free-only unless you opt in.
   --timeout INTEGER    Seconds per CLI before we give up. Default 120.
-  -v, --verbose        Log winner CLI + duration to stderr.
+  -v, --verbose        Log winner CLI + duration on stderr.
+
+\b
+Fast mode (--fast) — when to use
+  --fast is for pure text-in, text-out tasks: summarization, translation,
+  quick answers. It strips:
+    * claude: --tools "" --no-chrome --strict-mcp-config --no-session-persistence
+    * gemini: removes mcpServers from ~/.gemini/settings.json during the call
+    * codex/ollama: no-op (already lightweight)
+  Leave it off when you want the full tool/MCP environment (agent workflows,
+  code reading/writing, MCP-powered research).
 
 \b
 Paid API — opt-in examples
   cliworker "hi"                               free only (default)
   cliworker "hi" --paid-ok all                 paid OK for every CLI
   cliworker "hi" --paid-ok claude              paid OK for claude only
-  cliworker "hi" use claude codex --paid-ok claude
-                                               use both, but only claude may pay
+  cliworker "hi" run claude codex --paid-ok claude
+                                               run both, only claude may pay
 
 \b
 Diagnostic subcommands
@@ -101,23 +118,22 @@ Diagnostic subcommands
   cliworker setup                              re-run first-run diagnostics
   cliworker skip-cache                         inspect broken-engine cache
   cliworker skip-cache --clear ALL             clear it all
-  cliworker skip-cache --clear claude          clear one
 
 \b
 Python library
-  from cliworker import run, use
-  r = run("claude", "hi")                              # one call
-  r = run("claude", "hi", model="sonnet")              # model override
-  rs = use(["claude","codex"], "hi")                   # chain, free only
-  rs = use(["claude","codex"], "hi", paid_ok=True)     # paid OK for all
-  rs = use(["claude","codex"], "hi", paid_ok=["claude"])  # paid OK for one
+  from cliworker import run, run_fast
+  r = run("hi")                                # default chain, full mode
+  r = run("hi", "claude")                      # one CLI
+  r = run("hi", "claude", "codex")             # chain
+  r = run_fast("hi", "claude")                 # fast mode (sugar for fast=True)
+  r = run("hi", "claude", paid_ok=["claude"])  # paid OK for claude only
 
 \b
 State
   First-run saves default chain + paid_ok preference to
   ~/.cliworker/state.json (or $XDG_CONFIG_HOME/cliworker/state.json
-  if XDG_CONFIG_HOME is explicitly set). Edit anytime or re-run
-  `cliworker setup` to re-answer the prompts.
+  if that env var is explicitly set). Edit anytime or re-run
+  `cliworker setup`.
 
 \b
 Full docs: https://github.com/starshipagentic/cliworker
@@ -126,10 +142,10 @@ Full docs: https://github.com/starshipagentic/cliworker
 
 class PromptOrSubcommandGroup(click.Group):
     """Group that treats the first non-option arg as a prompt if it's not a
-    registered subcommand. Also preprocesses the `use` keyword into --use."""
+    registered subcommand. Also preprocesses the `run` keyword into --run."""
 
     def parse_args(self, ctx, args):
-        args = _rewrite_use_keyword(list(args))
+        args = _rewrite_run_keyword(list(args))
         # If the first positional arg isn't a registered subcommand, treat the
         # whole thing as a default "ask" invocation by prepending "_ask".
         first_positional = next((a for a in args if not a.startswith("-")), None)
@@ -151,17 +167,18 @@ def main(ctx: click.Context) -> None:
 
     \b
     Simplest:
-      cliworker "what is TCP?"                     default chain
-      cliworker "what is TCP?" use claude gemini   specific CLIs, in order
+      cliworker "what is TCP?"                     default chain, full
+      cliworker "hi" run claude gemini             specific CLIs in order
+      cliworker "summarize:" --fast                fast mode for quick tasks
 
     \b
-    Under the hood cliworker applies per-CLI speed flags so that, e.g.,
-    `claude -p` doesn't spend 15 seconds booting MCP servers.
+    Full mode (default) loads your full MCP/tool environment — like running
+    `claude -p` yourself. Fast mode (--fast) strips it down for quick
+    text-only tasks; see --help for what it strips.
 
     \b
     Default is FREE-ONLY: cliworker strips API-key env vars before invoking
-    each CLI, forcing subscription mode. Paid API is opt-in via --paid-ok
-    (or persistently via first-run / state.json). You never pay by accident.
+    each CLI, forcing subscription mode. Paid API is opt-in via --paid-ok.
 
     \b
     First run scans PATH and suggests installs for any missing CLI.
@@ -176,30 +193,36 @@ def main(ctx: click.Context) -> None:
 
 @main.command("_ask", hidden=True)
 @click.argument("prompt_parts", nargs=-1)
-@click.option("--use", "--llm", "use_csv", default=None, help="Comma-separated CLI names to try in order.")
-@click.option("--model", "-m", default=None, help="Model override (e.g., sonnet, gemini-2.5-flash, llama3.1).")
+@click.option("--run", "run_csv", default=None, help="Comma-separated CLI names to try in order.")
+@click.option("--fast", is_flag=True, default=False, help="Strip MCP/tools/chrome for speed.")
+@click.option("--model", "-m", default=None, help="Model override (sonnet, gemini-2.5-flash, gemma3:4b).")
 @click.option("--timeout", default=120, show_default=True, help="Seconds before we give up on a single CLI.")
 @click.option(
     "--paid-ok",
     "paid_ok_raw",
     default=None,
     help=(
-        "Allow paid API fallback when subscription fails. "
-        "Pass 'all' for every CLI, or a comma-separated list like 'claude,codex'. "
-        "Default: never use paid API (free/subscription only)."
+        "Allow paid API fallback. Pass 'all' for every CLI, or a "
+        "comma-separated list like 'claude,codex'. Default: never."
     ),
 )
 @click.option("--verbose", "-v", is_flag=True, help="Show which CLI answered + duration on stderr.")
-def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, timeout: int, paid_ok_raw: str | None, verbose: bool) -> None:
+def _ask(
+    prompt_parts: tuple[str, ...],
+    run_csv: str | None,
+    fast: bool,
+    model: str | None,
+    timeout: int,
+    paid_ok_raw: str | None,
+    verbose: bool,
+) -> None:
     """Default invocation: ask installed LLM CLIs a prompt."""
     # First-run diagnostics — only if state file doesn't exist yet
     if not state.exists():
         firstrun.run_diagnostics()
         if not state.default_chain():
-            # No CLIs installed — can't proceed
             sys.exit(1)
 
-    # Reconstruct prompt. If nothing piped in and no prompt given, show help.
     prompt = " ".join(prompt_parts).strip() if prompt_parts else ""
     stdin_content: str | None = None
     if not sys.stdin.isatty():
@@ -210,52 +233,42 @@ def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, 
         click.echo("Run `cliworker --help` for full examples.", err=True)
         sys.exit(2)
 
-    # If prompt empty but stdin has content, treat stdin as the prompt.
     if not prompt and stdin_content:
         prompt = stdin_content
         stdin_content = None
 
     # Determine which CLIs to use
-    if use_csv:
-        clis = [c.strip() for c in use_csv.split(",") if c.strip()]
+    if run_csv:
+        cli_names = [c.strip() for c in run_csv.split(",") if c.strip()]
     else:
-        clis = state.default_chain()
+        cli_names = state.default_chain()
 
-    if not clis:
+    if not cli_names:
         click.echo("No LLM CLIs available. Install one and re-run:", err=True)
         for name in ("claude", "codex", "gemini", "ollama"):
             for line in firstrun.INSTALL_HINTS[name]:
                 click.echo(f"  {line}", err=True)
         sys.exit(1)
 
-    # Optional per-CLI model override via get_spec()
-    from cliworker.registry import get_spec as _get_spec
+    # Build specs with optional model override
+    specs = [get_spec(name, model=model) if model else get_spec(name) for name in cli_names]
 
-    specs = [_get_spec(name, model=model) if model else _get_spec(name) for name in clis]
-
-    # Resolve paid_ok:
-    #   --paid-ok flag not given  → use saved state preference (default: None)
-    #   --paid-ok all             → True (all CLIs)
-    #   --paid-ok claude,codex    → list of names
+    # Resolve paid_ok from flag or state
     if paid_ok_raw is None:
-        # Inherit from state, if configured
         saved = state.load().get("paid_ok")
-        if saved is True or saved is False or saved is None:
-            paid_ok = saved
-        elif isinstance(saved, list):
-            paid_ok = saved
-        else:
-            paid_ok = None
+        paid_ok = saved if isinstance(saved, (list, bool)) or saved is None else None
     elif paid_ok_raw.lower() == "all":
         paid_ok = True
     else:
         paid_ok = [c.strip() for c in paid_ok_raw.split(",") if c.strip()]
 
-    results = use(
-        specs, prompt,
-        stdin_content=stdin_content,
+    # Fire the chain
+    results = run(
+        prompt, *specs,
+        fast=True if fast else None,  # None = respect spec default (full)
         paid_ok=paid_ok,
         timeout_s=timeout,
+        stdin_content=stdin_content,
     )
 
     if verbose:
@@ -270,7 +283,6 @@ def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, 
         click.echo(first_ok.stdout, nl=False)
         sys.exit(0)
 
-    # All failed
     click.echo("All CLIs failed:", err=True)
     for r in results:
         click.echo(f"  {r.spec.cli}: {r.stderr[:120]}", err=True)
@@ -302,7 +314,6 @@ def info(cli_name: str | None) -> None:
     Examples:
       cliworker info                    show all four known CLIs
       cliworker info claude             show claude only
-      cliworker info codex              show codex only
     """
     names = [cli_name] if cli_name else list(KNOWN_CLIS.keys())
     for name in names:
@@ -311,7 +322,7 @@ def info(cli_name: str | None) -> None:
         click.echo(f"  cli binary:        {spec.cli}")
         click.echo(f"  subcommand:        {spec.subcommand or '(none)'}")
         click.echo(f"  prompt transport:  {spec.prompt_flag} ({spec.prompt_flag_name})")
-        click.echo(f"  fast flags:        {'ON' if spec.fast else 'off'}")
+        click.echo(f"  fast flags:        {'ON' if spec.fast else 'off (full mode default)'}")
         click.echo(f"  env vars stripped: {spec.env_strip or '(none)'}")
         click.echo(f"  sample argv:       {spec.build_argv('<PROMPT>')}")
         click.echo()
@@ -323,24 +334,28 @@ def info(cli_name: str | None) -> None:
 
 @main.command()
 @click.option("--probe/--no-probe", default=False, help="Invoke each installed CLI with a tiny prompt to measure cold start.")
-@click.option("--probe-timeout", default=30, show_default=True)
-def doctor(probe: bool, probe_timeout: int) -> None:
+@click.option("--probe-timeout", default=60, show_default=True)
+@click.option("--fast", "probe_fast", is_flag=True, default=False, help="Probe with fast mode (skip MCP/tools).")
+def doctor(probe: bool, probe_timeout: int, probe_fast: bool) -> None:
     """Scan PATH for installed LLM CLIs; optionally probe with a live call.
 
     \b
     Two modes:
       (default)  Fast PATH scan only. Never invokes anything. ~10ms.
       --probe    Actually runs each installed CLI with "say ok" and
-                 reports duration. Uses your subscription (keys stripped).
-                 Helpful for confirming CLAUDE_FAST is working, or
-                 comparing cold-start times across CLIs.
+                 reports duration. Uses subscription (keys stripped).
+
+    \b
+    Probing uses the per-spec default (full mode). Add --fast to probe
+    the speed-flagged path instead.
 
     \b
     Examples:
-      cliworker doctor                         fast scan
-      cliworker doctor --probe                 + timing probe
-      cliworker doctor --probe --probe-timeout 60
-                                               generous timeout for cold ollama
+      cliworker doctor                          fast scan, no network
+      cliworker doctor --probe                  probe in full mode (slow)
+      cliworker doctor --probe --fast           probe in fast mode (quick)
+      cliworker doctor --probe --probe-timeout 120
+                                                generous timeout for cold ollama
     """
     presences = detect()
     for name, p in presences.items():
@@ -350,23 +365,31 @@ def doctor(probe: bool, probe_timeout: int) -> None:
 
     if probe:
         click.echo()
-        click.echo(click.style("Probing installed CLIs (one-shot 'say ok', subscription mode)...", bold=True))
+        mode_label = "fast mode" if probe_fast else "full mode"
+        click.echo(click.style(
+            f"Probing installed CLIs (one-shot 'say ok', subscription, {mode_label})...",
+            bold=True,
+        ))
         from cliworker.skipcache import DEFAULT_CACHE_PATH, clear
 
-        # Don't let stale skip-cache suppress probes — probes are a diagnostic
-        # tool, the user asked for fresh info. Clear once before probing.
         clear(None, path=DEFAULT_CACHE_PATH)
         for name, p in presences.items():
             if not p.installed:
                 continue
-            # strip_keys=True: use subscription, matching cliworker's default
-            # behavior for bare-prompt invocations.
-            result = run(name, "Say exactly: ok", strip_keys=True, timeout_s=probe_timeout)
-            if result.ok:
-                click.echo(f"  {name:8}  {result.duration_s:5.2f}s  {click.style('ok', fg='green')}")
+            results = run(
+                "Say exactly: ok",
+                name,
+                fast=True if probe_fast else None,
+                timeout_s=probe_timeout,
+            )
+            r = results[0] if results else None
+            if r and r.ok:
+                click.echo(f"  {name:8}  {r.duration_s:5.2f}s  {click.style('ok', fg='green')}")
+            elif r:
+                err = r.stderr.strip()[:80] or "(no stderr)"
+                click.echo(f"  {name:8}  {r.duration_s:5.2f}s  {click.style('fail', fg='red')}  {err}")
             else:
-                err = result.stderr.strip()[:80] or "(no stderr)"
-                click.echo(f"  {name:8}  {result.duration_s:5.2f}s  {click.style('fail', fg='red')}  {err}")
+                click.echo(f"  {name:8}  —      {click.style('no result', fg='red')}")
 
 
 # ---------------------------------------------------------------------------
@@ -375,29 +398,23 @@ def doctor(probe: bool, probe_timeout: int) -> None:
 
 @main.command()
 def setup() -> None:
-    """Re-run the first-run diagnostics. Never auto-installs anything — just
-    prints actionable commands for whatever's missing, then re-asks the
-    paid-API-fallback preference.
+    """Re-run the first-run diagnostics. Never auto-installs anything.
 
     \b
     What it does:
       1. Shows the ASCII banner
       2. Scans PATH for claude / codex / gemini / ollama
-      3. For each missing CLI: prints the exact install command
-         (e.g. `npm i -g @openai/codex`, `brew install ollama`)
-      4. Checks if ollama has the default model (llama3.1) pulled, prints
-         `ollama pull llama3.1` if not
+      3. For missing CLIs: prints exact install command (e.g. `npm i -g @openai/codex`)
+      4. For ollama: checks if default model (gemma3:4b) is pulled;
+         prints `ollama pull gemma3:4b` if not
       5. Prompts: "Allow paid API fallback for any CLIs now? [y/N]"
-         → no  = state.json saves paid_ok=null (free forever)
-         → yes = asks "Which CLIs? (comma-separated or 'all')"
-      6. Writes ~/.cliworker/state.json (or $XDG_CONFIG_HOME/cliworker/
-         state.json if you set that env var)
+      6. Writes ~/.cliworker/state.json
 
     \b
     Examples:
-      cliworker setup                run the interactive setup wizard
+      cliworker setup
       rm ~/.cliworker/state.json && cliworker "hi"
-                                     force re-setup next invocation
+                                             force re-setup on next call
 
     Nothing is ever auto-installed. The wizard prints what to run; you run it.
     """
@@ -418,15 +435,14 @@ def skip_cache_cmd(clear_name: str | None) -> None:
       When a CLI invocation fails (bad auth, quota hit, subscription
       lapsed), cliworker remembers that failure for 1 hour so subsequent
       calls don't keep retrying and eating seconds. The cache is a tiny
-      JSON file at ~/.cliworker/skip-cache.json (or $XDG_CACHE_HOME/
-      cliworker/skip-cache.json if that env var is set).
+      JSON file at ~/.cliworker/skip-cache.json.
 
     \b
     Examples:
-      cliworker skip-cache                  inspect — shows which CLIs are suppressed
-      cliworker skip-cache --clear claude   un-suppress just claude
-      cliworker skip-cache --clear ALL      reset everything
-      rm ~/.cliworker/skip-cache.json       same effect as --clear ALL
+      cliworker skip-cache                 inspect — shows which CLIs are suppressed
+      cliworker skip-cache --clear claude  un-suppress just claude
+      cliworker skip-cache --clear ALL     reset everything
+      rm ~/.cliworker/skip-cache.json      same effect as --clear ALL
 
     \b
     When to use:
@@ -446,11 +462,13 @@ def skip_cache_cmd(clear_name: str | None) -> None:
             clear(clear_name)
             click.echo(f"Cleared {clear_name} from skip-cache")
         return
+
     data = _load(DEFAULT_CACHE_PATH)
     if not data:
         click.echo("Skip-cache is empty. Nothing suppressed.")
         click.echo(f"(cache at {DEFAULT_CACHE_PATH})")
         return
+
     click.echo(f"Skip-cache at {DEFAULT_CACHE_PATH}:")
     for name, ts in sorted(data.items()):
         age = int(time.time() - ts)

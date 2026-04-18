@@ -1,46 +1,56 @@
 """cliworker — one sane way to call claude, codex, gemini, ollama as subprocesses.
 
-Two verbs, one result object:
+Python API — two functions:
 
-    from cliworker import run, use
+    from cliworker import run, run_fast
 
-    # Call ONE CLI:
-    r = run("claude", "explain async/await")
+    run("hi")                            # default chain (from state.json), full mode
+    run("hi", "claude")                  # one CLI, full mode
+    run("hi", "claude", "codex")         # chain, full mode
+    run_fast("hi", "claude")             # one CLI, fast mode (sugar for fast=True)
+    run("hi", "claude", fast=True)       # same thing, explicit
+    run("hi", "claude", paid_ok=True)    # allow paid API fallback
 
-    # Use a list of CLIs in order (first success wins):
-    results = use(["claude", "codex", "gemini"], "summarize this")
+Every call returns a `list[CLIResult]`. Short-circuits at first success.
 
-Every call returns a CLIResult with .ok / .stdout / .stderr / .duration_s /
-.spec / .argv / .returncode.
+Shell API — even simpler:
 
-What cliworker does for you, automatically:
-  * claude -p gets CLAUDE_FAST_FLAGS (no MCP/tools/chrome) → 18s → 4s cold start
-  * gemini -p strips mcpServers from ~/.gemini/settings.json during call
-  * use() tries subscription mode first (strips env API keys),
-    then retries each with keys intact (paid-API retry pass)
-  * failed CLIs get cached for 1h so you don't re-spam a broken engine
+    cliworker "hi"                       # default chain, full mode
+    cliworker "hi" --fast                # default chain, fast mode
+    cliworker "hi" run claude            # one CLI, full mode
+    cliworker "hi" run claude --fast     # one CLI, fast mode
+    cliworker "hi" run claude codex      # chain
 
-From a shell, it's even simpler:
+What "fast" does, automatically:
+    * claude -p gets CLAUDE_FAST_FLAGS (no MCP/tools/chrome startup) → ~18s → ~4s
+    * gemini -p strips mcpServers from ~/.gemini/settings.json during the call
+    * codex/ollama: no-op (already lightweight)
 
-    cliworker "what is TCP?"
-    cliworker "what is TCP?" use claude gemini
+By default cliworker stays free-only: API key env vars are stripped before every
+invocation. To allow paid-API fallback, pass paid_ok=True / paid_ok=["claude"]
+in Python, or `--paid-ok all` / `--paid-ok claude,codex` on the shell.
+
+State + cache live at ~/.cliworker/ (honors XDG_CONFIG_HOME / XDG_CACHE_HOME
+if explicitly set).
 """
 from cliworker.core import (
     CLIResult,
     CLISpec,
     run,
-    use,
+    run_fast,
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
+from cliworker.state import default_chain
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 __all__ = [
     "run",
-    "use",
+    "run_fast",
     "CLIResult",
     "CLISpec",
     "get_spec",
     "KNOWN_CLIS",
+    "default_chain",
     "__version__",
 ]
