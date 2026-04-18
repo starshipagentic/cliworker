@@ -52,7 +52,7 @@ from cliworker.core import (
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     # Primary API
