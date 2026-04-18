@@ -2,13 +2,22 @@
 
 **One sane way to call `claude`, `codex`, `gemini`, `ollama` as subprocesses — fast, uniform, and reliable.**
 
+From your shell:
+
+```bash
+cliworker "what is TCP?"                       # use default chain
+cliworker "what is TCP?" use claude gemini     # specific CLIs, in order
+```
+
+From Python:
+
 ```python
-from cliworker import run, fallback
+from cliworker import run, use
 
 result = run("claude", "explain async/await in 3 sentences")
 print(result.ok, result.duration_s, result.stdout)
 
-results = fallback(["claude", "codex", "gemini"], "summarize this")
+results = use(["claude", "codex", "gemini"], "summarize this")
 first_ok = next((r for r in results if r.ok), None)
 ```
 
@@ -43,7 +52,44 @@ Requires Python ≥ 3.10. The actual LLM CLIs (`claude`, `codex`, `gemini`, `oll
 
 ---
 
-## The mental model
+## Shell usage — the natural shape
+
+```bash
+cliworker "what is TCP?"                    # bare prompt, default chain
+cliworker "what is TCP?" use claude         # one specific CLI
+cliworker "what is TCP?" use claude gemini  # chain in the order you listed
+cliworker --use claude,gemini "hi"          # flag form
+cliworker --llm claude,gemini "hi"          # --llm is an alias for --use
+
+cliworker "summarize:" < transcript.txt     # pipe bulk content via stdin
+cliworker "hi" -m sonnet                    # model override
+cliworker "hi" --no-paid                    # stay free-tier, don't retry with API keys
+cliworker "hi" -v                           # show winner CLI + duration on stderr
+```
+
+No verbs to remember, no `-p` flag to type, no boilerplate. The prompt is
+the prompt; `use` tells cliworker which CLIs. That's it.
+
+For diagnostics:
+
+```bash
+cliworker doctor                             # which LLM CLIs are installed?
+cliworker doctor --probe                     # also ping each with a "say ok"
+cliworker info                               # show argv recipe for each CLI
+cliworker info claude                        # just one
+cliworker setup                              # re-run first-run diagnostics
+cliworker skip-cache                         # inspect broken-engine cache
+cliworker skip-cache --clear ALL             # reset it
+```
+
+### First run
+
+The first time you type `cliworker "..."`, cliworker shows an ASCII banner,
+scans PATH for installed CLIs, tells you exactly what to `npm i -g` /
+`brew install` / `ollama pull` for anything missing, and saves its config
+to `~/.config/cliworker/state.json`. Subsequent runs skip all that.
+
+## Python library — the mental model
 
 There are exactly **two verbs** and **one result object.**
 
@@ -63,14 +109,14 @@ r = run("claude", "summarize:",               # big content via stdin
 r = run("claude", "hi", strip_keys=True)      # force subscription mode
 ```
 
-### `fallback(clis, prompt, **kwargs)` → `list[CLIResult]`
+### `use(clis, prompt, **kwargs)` → `list[CLIResult]`
 
-Try a chain of CLIs in order, stop at first success:
+Use a list of CLIs in order, stop at first success:
 
 ```python
-from cliworker import fallback
+from cliworker import use
 
-results = fallback(["claude", "codex", "gemini"], "summarize this")
+results = use(["claude", "codex", "gemini"], "summarize this")
 first_ok = next((r for r in results if r.ok), None)
 
 # Default behavior: two passes
@@ -78,7 +124,7 @@ first_ok = next((r for r in results if r.ok), None)
 #   Pass 2: all CLIs with env API keys PRESENT (paid API mode)
 # First .ok returns; list contains every attempt in order.
 
-results = fallback(
+results = use(
     ["claude", "codex"],
     "hi",
     free_first=False,       # flip the default: paid API first
@@ -86,6 +132,8 @@ results = fallback(
     timeout_s=30,
 )
 ```
+
+The old name `fallback()` still works as a back-compat alias.
 
 ### `CLIResult` — what comes back
 
@@ -190,33 +238,18 @@ clear(None)          # nuke entire cache
 
 ---
 
-## CLI usage
+## CLI reference
 
-The Python library is the main interface. The CLI exists for debugging, health checks, and quick shell-level one-offs.
+See the "Shell usage" section above for the natural-language invocation.
+Every subcommand has `--help` with full examples:
 
 ```bash
-cliworker --help                       # full overview
-cliworker run claude -p "hi"           # invoke one CLI
-cliworker run claude -p "hi" -m sonnet
-cliworker run claude -p "hi" --no-fast # disable CLAUDE_FAST for debugging
-cliworker run claude -p "summarize:" --stdin < transcript.txt
-cliworker run claude -p "hi" -v        # verbose: show argv + timing
-
-cliworker fallback claude codex gemini -p "summarize"
-cliworker fallback claude codex -p "hi" --paid-first
-cliworker fallback claude codex -p "hi" --no-retry
-
-cliworker info                         # show default spec for every CLI
-cliworker info claude                  # show one CLI's spec
-cliworker doctor                       # scan PATH for installed CLIs
-cliworker doctor --probe               # also ping each with "hi" to measure cold start
-
-cliworker skip-cache                   # inspect broken-engine cache
-cliworker skip-cache --clear claude
-cliworker skip-cache --clear ALL
+cliworker --help                     # full overview
+cliworker doctor --help
+cliworker info --help
+cliworker skip-cache --help
+cliworker setup --help
 ```
-
-Every subcommand has its own `-h` / `--help` with full examples and exit-code docs.
 
 ---
 
@@ -315,16 +348,17 @@ Run `cliworker info` to see the exact argv each one would build.
 ```python
 from cliworker import (
     run,            # call one CLI
-    fallback,       # chain of CLIs, first success wins
+    use,            # list of CLIs in order, first success wins
     CLIResult,      # dataclass: ok/stdout/stderr/duration_s/spec/argv
     CLISpec,        # dataclass: cli/model/fast/env_strip/...
     get_spec,       # look up spec by CLI name + optional overrides
     KNOWN_CLIS,     # dict of built-in specs
 )
 
-# Back-compat aliases (original names, same signatures):
-from cliworker import run_cli            # alias for run
-from cliworker import run_with_fallback  # alias for fallback
+# Back-compat aliases (older names, same signatures):
+from cliworker import fallback           # old name for `use`
+from cliworker import run_cli            # old name for `run`
+from cliworker import run_with_fallback  # old name for `use`
 ```
 
 Sub-modules worth knowing about:

@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.3.0 — natural-language CLI, one-word verb, first-run diagnostics
+
+The CLI should feel like a tool, not a library's skin. 0.3.0 makes that real.
+
+### Shell — no more `run`, no more `-p`
+
+    cliworker "what is TCP?"                  default chain, just the prompt
+    cliworker "what is TCP?" use claude       specific CLI
+    cliworker "what is TCP?" use claude gemini  chain in stated order
+    cliworker --use claude,gemini "hi"        flag form
+    cliworker "hi" --no-paid                  only try subscription mode
+    cliworker "hi" -m sonnet                  model override (optional)
+    cliworker "hi" -v                         show winner + duration
+
+Prompt is always positional. No verb needed. `use` is the only connector
+word (flag form `--use` or `--llm` for scripts that prefer flags).
+
+### Library — `fallback` → `use`
+
+    from cliworker import run, use
+    run("claude", "hi")
+    use(["claude","codex"], "hi")   # was: fallback(...)
+
+`fallback` kept as a back-compat alias.
+
+### First-run experience
+
+Typing `cliworker "..."` for the first time shows an ASCII banner, scans
+PATH for installed CLIs, prints an actionable install command for each
+missing one, checks if ollama has the default model pulled (and prints
+`ollama pull llama3.1` if not), then saves state to
+~/.config/cliworker/state.json so subsequent runs skip the check.
+
+Added `cliworker setup` command to re-run diagnostics on demand (never
+auto-installs — just prints what to run).
+
+### Also
+
+- State file at ~/.config/cliworker/state.json with detected CLIs + default chain.
+- Custom Click group that treats any non-option first arg as a prompt
+  unless it matches a known subcommand (doctor/info/skip-cache/setup).
+- argv preprocessor converts `... use cli1 cli2` → `--use cli1,cli2`.
+- `cliworker --help` shows all the natural-language examples up front.
+- 37 tests green (10 new for argv preprocessor + first-run edge cases).
+
 ## 0.2.0 — clarity pass: API + CLI + docs
 
 - **New primary API names**: `run()` and `fallback()`. Old names `run_cli()`

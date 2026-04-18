@@ -1,68 +1,54 @@
 """cliworker — one sane way to call claude, codex, gemini, ollama as subprocesses.
 
-Why this library exists
-=======================
-Every LLM CLI has its own flags, its own quirks, its own startup overhead. You
-end up writing the same wrapper code in every project: build the argv, run
-subprocess, catch timeouts, parse output. Worse: on a loaded dev machine,
-`claude -p` can take 18 seconds to say "hi" because it loads MCP servers,
-tools, and chrome extensions at startup — every time.
+Two verbs, one result object:
 
-cliworker fixes that once.
+    from cliworker import run, use
 
-Two verbs, one result
-=====================
-
-    from cliworker import run, fallback
-
-    # Verb 1 — call ONE CLI:
+    # Call ONE CLI:
     r = run("claude", "explain async/await")
-    print(r.ok, r.duration_s, r.stdout)
 
-    # Verb 2 — try a FALLBACK CHAIN (stop on first success):
-    results = fallback(["claude", "codex", "gemini"], "summarize this")
-    first_ok = next((r for r in results if r.ok), None)
+    # Use a list of CLIs in order (first success wins):
+    results = use(["claude", "codex", "gemini"], "summarize this")
 
 Every call returns a CLIResult with .ok / .stdout / .stderr / .duration_s /
-.spec / .argv / .returncode. That's the entire mental model.
+.spec / .argv / .returncode.
 
-Sensible defaults baked in
-==========================
+What cliworker does for you, automatically:
+  * claude -p gets CLAUDE_FAST_FLAGS (no MCP/tools/chrome) → 18s → 4s cold start
+  * gemini -p strips mcpServers from ~/.gemini/settings.json during call
+  * use() tries subscription mode first (strips env API keys),
+    then retries with keys for paid-API fallback
+  * failed CLIs get cached for 1h so you don't re-spam a broken engine
 
-* `run("claude", ...)` automatically applies CLAUDE_FAST_FLAGS
-  (--tools "" --no-chrome --strict-mcp-config --mcp-config {} --no-session-persistence)
-  which reduces a cold `claude -p` from ~18s to ~4s on loaded machines.
-* `run("gemini", ...)` automatically strips mcpServers from ~/.gemini/settings.json
-  during the call and restores afterwards (gemini has no config-override flag).
-* `fallback(..., free_first=True)` (default) strips API key env vars on pass 1
-  to force subscription-mode use, then retries with keys on pass 2.
-* Failed CLIs are cached for 1 hour in ~/.cache/cliworker/skip-cache.json so
-  repeated calls don't keep trying an engine whose auth just expired.
+From a shell, it's even simpler:
 
-All defaults are overridable via CLISpec.
+    cliworker "what is TCP?"
+    cliworker "what is TCP?" use claude gemini
 """
 from cliworker.core import (
     CLIResult,
     CLISpec,
-    fallback,
     run,
-    # Back-compat aliases (original names):
+    use,
+    # Back-compat aliases:
+    fallback,
     run_cli,
     run_with_fallback,
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     # Primary API
     "run",
-    "fallback",
+    "use",
     "CLIResult",
     "CLISpec",
     "get_spec",
     "KNOWN_CLIS",
     # Back-compat
+    "fallback",
     "run_cli",
     "run_with_fallback",
     "__version__",

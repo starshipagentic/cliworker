@@ -186,7 +186,7 @@ def _run_impl(
     return result
 
 
-def fallback(
+def use(
     specs: Iterable[CLISpec | str],
     prompt: str | None = None,
     *,
@@ -196,10 +196,12 @@ def fallback(
     timeout_s: int = DEFAULT_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> list[CLIResult]:
-    """Try CLIs in order, return the first success (or all failures).
+    """Use a list of CLIs in order — try the first, fall through to later
+    ones only if earlier ones fail. Returns the full list of attempts; the
+    first success stops the chain.
 
     Example:
-        results = fallback(["claude", "codex", "gemini"], "summarize this")
+        results = use(["claude", "codex", "gemini"], "summarize this")
         first_ok = next((r for r in results if r.ok), None)
         if first_ok:
             print(first_ok.stdout)
@@ -212,11 +214,11 @@ def fallback(
         var is set; stripping flips it back.
       Pass 2 (retry_paid=True, default) — retry each spec with env keys
         intact, in case subscription is unavailable and the paid API is
-        the only path that works.
+        the only path that works. Set retry_paid=False to stay free-only.
 
-    Returns the full list of attempts in order (one CLIResult per try),
-    stopping at the first success. If every spec fails both passes, the
-    list has one entry per spec per pass.
+    Returns the full list of attempts in order, stopping at the first
+    success. If every spec fails both passes, the list has one entry per
+    spec per pass.
     """
     specs_list = [get_spec(s) if isinstance(s, str) else s for s in specs]
     results: list[CLIResult] = []
@@ -277,10 +279,30 @@ def run_with_fallback(
     timeout_s: int = DEFAULT_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> list[CLIResult]:
-    """Back-compat alias for `fallback`. New code should use `fallback`."""
-    return fallback(
+    """Back-compat alias for `use()`. New code should use `use()`."""
+    return use(
         specs, prompt,
         stdin_content=stdin_content,
         free_first=strip_keys_first, retry_paid=retry_with_keys,
+        timeout_s=timeout_s, cwd=cwd,
+    )
+
+
+# Back-compat alias for the previous name (fallback → use)
+def fallback(
+    specs: Iterable[CLISpec | str],
+    prompt: str | None = None,
+    *,
+    stdin_content: str | None = None,
+    free_first: bool = True,
+    retry_paid: bool = True,
+    timeout_s: int = DEFAULT_TIMEOUT,
+    cwd: str | Path | None = None,
+) -> list[CLIResult]:
+    """Back-compat alias for `use()`. Renamed in 0.3.0 — old code still works."""
+    return use(
+        specs, prompt,
+        stdin_content=stdin_content,
+        free_first=free_first, retry_paid=retry_paid,
         timeout_s=timeout_s, cwd=cwd,
     )
