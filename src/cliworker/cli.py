@@ -119,9 +119,15 @@ def main(ctx: click.Context) -> None:
 
     \b
     Under the hood cliworker applies per-CLI speed flags so that, e.g.,
-    `claude -p` doesn't spend 15 seconds booting MCP servers. It also tries
-    subscription mode before paid API to maximize free-tier use. First run
-    scans PATH and suggests installs for any missing CLI.
+    `claude -p` doesn't spend 15 seconds booting MCP servers.
+
+    \b
+    Default is FREE-ONLY: cliworker strips API-key env vars before invoking
+    each CLI, forcing subscription mode. Paid API is opt-in via --paid-ok
+    (or persistently via first-run / state.json). You never pay by accident.
+
+    \b
+    First run scans PATH and suggests installs for any missing CLI.
     """
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -136,9 +142,18 @@ def main(ctx: click.Context) -> None:
 @click.option("--use", "--llm", "use_csv", default=None, help="Comma-separated CLI names to try in order.")
 @click.option("--model", "-m", default=None, help="Model override (e.g., sonnet, gemini-2.5-flash, llama3.1).")
 @click.option("--timeout", default=120, show_default=True, help="Seconds before we give up on a single CLI.")
-@click.option("--no-paid", is_flag=True, help="Don't retry with paid API keys after free-tier attempt fails.")
+@click.option(
+    "--paid-ok",
+    "paid_ok_raw",
+    default=None,
+    help=(
+        "Allow paid API fallback when subscription fails. "
+        "Pass 'all' for every CLI, or a comma-separated list like 'claude,codex'. "
+        "Default: never use paid API (free/subscription only)."
+    ),
+)
 @click.option("--verbose", "-v", is_flag=True, help="Show which CLI answered + duration on stderr.")
-def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, timeout: int, no_paid: bool, verbose: bool) -> None:
+def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, timeout: int, paid_ok_raw: str | None, verbose: bool) -> None:
     """Default invocation: ask installed LLM CLIs a prompt."""
     # First-run diagnostics — only if state file doesn't exist yet
     if not state.exists():
@@ -181,11 +196,28 @@ def _ask(prompt_parts: tuple[str, ...], use_csv: str | None, model: str | None, 
 
     specs = [_get_spec(name, model=model) if model else _get_spec(name) for name in clis]
 
+    # Resolve paid_ok:
+    #   --paid-ok flag not given  → use saved state preference (default: None)
+    #   --paid-ok all             → True (all CLIs)
+    #   --paid-ok claude,codex    → list of names
+    if paid_ok_raw is None:
+        # Inherit from state, if configured
+        saved = state.load().get("paid_ok")
+        if saved is True or saved is False or saved is None:
+            paid_ok = saved
+        elif isinstance(saved, list):
+            paid_ok = saved
+        else:
+            paid_ok = None
+    elif paid_ok_raw.lower() == "all":
+        paid_ok = True
+    else:
+        paid_ok = [c.strip() for c in paid_ok_raw.split(",") if c.strip()]
+
     results = use(
         specs, prompt,
         stdin_content=stdin_content,
-        free_first=True,
-        retry_paid=not no_paid,
+        paid_ok=paid_ok,
         timeout_s=timeout,
     )
 

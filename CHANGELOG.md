@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.5.0 — free-by-default, paid opt-in (breaking)
+
+Flipped the default: cliworker now never uses paid API fallback unless
+you explicitly allow it. Surprise-billing avoided.
+
+### Python API (breaking)
+
+`use()` kwargs `free_first` and `retry_paid` are gone. Single new kwarg:
+`paid_ok`.
+
+    use(clis, prompt)                       # free/subscription only (default)
+    use(clis, prompt, paid_ok=True)         # paid OK for every CLI
+    use(clis, prompt, paid_ok=["claude"])   # paid OK only for claude
+    use(clis, prompt, paid_ok=False)        # explicit form of default
+
+Pass 2 (paid API) runs only for the CLIs you authorized. CLIs NOT in
+`paid_ok` never get their env key handed to them.
+
+### CLI (breaking)
+
+`--no-paid` is gone. New flag `--paid-ok`:
+
+    cliworker "hi"                         # free only
+    cliworker "hi" --paid-ok all           # paid OK for every CLI
+    cliworker "hi" --paid-ok claude,codex  # paid OK only for those
+    cliworker "hi" use claude --paid-ok claude   # fine-grained with `use`
+
+The flag overrides the persistent state.json setting for one invocation.
+
+### First-run
+
+After the CLI scan, first-run now prompts:
+
+    Paid API fallback
+    When a CLI's subscription/free tier fails, cliworker can optionally fall
+    back to paid API (using $ANTHROPIC_API_KEY, etc.). By default this is OFF.
+
+      Allow paid API fallback for any CLIs now? [y/N]:
+        y → asks "Which CLIs? (comma-separated, or 'all')"
+        n → saved as paid_ok=None (stays free forever)
+
+Saved to ~/.config/cliworker/state.json as `paid_ok: null | true | ["cli",...]`.
+Edit that file any time to change it — or re-run `cliworker setup`.
+
+### Tests
+
+41 green. 4 new tests covering paid_ok default-off, paid_ok=True runs
+both passes for all, paid_ok=list restricts pass 2 to the listed CLIs,
+paid_ok=False matches default behavior.
+
 ## 0.4.0 — remove back-compat aliases (breaking)
 
 Dropped: `fallback()`, `run_cli()`, `run_with_fallback()`. The public Python

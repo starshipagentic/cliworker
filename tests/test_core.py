@@ -117,7 +117,7 @@ def test_use_chains_through_failures(monkeypatch):
     monkeypatch.setattr("cliworker.core.subprocess.run", fake_run)
     results = use(
         ["claude", "codex", "gemini"], prompt="hi",
-        free_first=True, retry_paid=False,  # only one pass
+        paid_ok=None,  # default: no paid retry
     )
     # Should have tried all three
     assert len(results) == 3

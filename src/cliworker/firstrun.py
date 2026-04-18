@@ -156,10 +156,45 @@ def run_diagnostics(echo=click.echo, color: bool = True) -> dict:
 
     default_chain = [n for n in ("claude", "codex", "gemini", "ollama") if n in installed_names]
     echo(f"Default chain: {_c(' → '.join(default_chain), 'cyan')}")
+
+    # Paid-API fallback preference — off by default, opt-in explicit.
+    echo("")
+    echo(_c("Paid API fallback", bold=True))
+    echo("When a CLI's subscription/free tier fails, cliworker can optionally fall")
+    echo("back to paid API (using $ANTHROPIC_API_KEY, $OPENAI_API_KEY, etc.). By")
+    echo("default this is OFF — you won't accidentally burn API credits.")
+    echo("")
+    paid_ok: bool | list[str] | None = None
+    try:
+        allow_any = click.confirm("  Allow paid API fallback for any CLIs now?", default=False, show_default=True)
+    except click.Abort:
+        allow_any = False
+    if allow_any:
+        default_list = ",".join(installed_names)
+        raw = click.prompt(
+            "  Which CLIs? (comma-separated, or 'all')",
+            default=default_list,
+            show_default=True,
+        )
+        if raw.strip().lower() == "all":
+            paid_ok = True
+        else:
+            paid_ok = [c.strip() for c in raw.split(",") if c.strip() in installed_names]
+            if not paid_ok:
+                paid_ok = None
+
     saved = state.mark_first_run_complete(
         detected_clis={name: (name in installed_names) for name in presences},
         ollama_has_model=ollama_model_ok,
+        paid_ok=paid_ok,
     )
+    echo("")
+    if paid_ok is True:
+        echo(_c("Paid API fallback: enabled for all CLIs.", fg="yellow"))
+    elif isinstance(paid_ok, list) and paid_ok:
+        echo(_c(f"Paid API fallback: enabled for {', '.join(paid_ok)}.", fg="yellow"))
+    else:
+        echo(_c("Paid API fallback: OFF (free/subscription only).", fg="green"))
     echo(click.style(f"Saved config to {state.state_path()}", dim=True) if color else f"Saved: {state.state_path()}")
     echo("")
     return saved

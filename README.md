@@ -33,7 +33,8 @@ cliworker encapsulates a year of tricks for calling these CLIs efficiently:
 |---|---|
 | `claude -p` boots every MCP server → 18s cold start | `CLAUDE_FAST` flags skip MCP / tools / chrome / session-persistence → ~4s |
 | `gemini` has no config-override flag | Temporarily strips `mcpServers` from `~/.gemini/settings.json` and restores after |
-| CLIs prefer paid API keys over subscriptions when both exist | `strip_keys=True` removes API-key env vars at call time to force subscription use |
+| CLIs prefer paid API keys over subscriptions when both exist | Default: strip API keys to force subscription use. Paid opt-in via `paid_ok` |
+| Surprise billing when a subscription expires | Default: never falls back to paid API. Opt-in per-CLI via `paid_ok=["claude"]` |
 | Broken CLIs (expired auth, quota hit) waste seconds every call | 1-hour skip-cache at `~/.cache/cliworker/skip-cache.json` |
 | Every CLI uses different prompt-transport conventions | Unified `run()` API; per-CLI recipes in `KNOWN_CLIS` |
 | Long transcripts bloat argv | `stdin_content=` pipes bulk content via stdin, keeps the instruction on argv |
@@ -63,12 +64,17 @@ cliworker --llm claude,gemini "hi"          # --llm is an alias for --use
 
 cliworker "summarize:" < transcript.txt     # pipe bulk content via stdin
 cliworker "hi" -m sonnet                    # model override
-cliworker "hi" --no-paid                    # stay free-tier, don't retry with API keys
+cliworker "hi" --paid-ok all                # allow paid API fallback (all CLIs)
+cliworker "hi" --paid-ok claude,codex       # allow paid API for those two only
 cliworker "hi" -v                           # show winner CLI + duration on stderr
 ```
 
 No verbs to remember, no `-p` flag to type, no boilerplate. The prompt is
 the prompt; `use` tells cliworker which CLIs. That's it.
+
+**Default: free only.** cliworker never uses paid API fallback unless you
+explicitly allow it — either once via `--paid-ok`, or persistently by answering
+the first-run prompt (or editing `~/.config/cliworker/state.json`).
 
 For diagnostics:
 
@@ -116,22 +122,27 @@ Use a list of CLIs in order, stop at first success:
 ```python
 from cliworker import use
 
+# Default — free/subscription only, never touches paid API
 results = use(["claude", "codex", "gemini"], "summarize this")
 first_ok = next((r for r in results if r.ok), None)
 
-# Default behavior: two passes
-#   Pass 1: all CLIs with env API keys STRIPPED (free/subscription mode)
-#   Pass 2: all CLIs with env API keys PRESENT (paid API mode)
-# First .ok returns; list contains every attempt in order.
+# Allow paid API fallback for EVERY CLI in the chain
+results = use(["claude", "codex"], "hi", paid_ok=True)
 
-results = use(
-    ["claude", "codex"],
-    "hi",
-    free_first=False,       # flip the default: paid API first
-    retry_paid=False,       # don't try a 2nd pass at all
-    timeout_s=30,
-)
+# Allow paid only for specific CLIs (granular budget control)
+results = use(["claude", "codex", "gemini"], "hi", paid_ok=["claude"])
+#   → claude tries sub first, falls back to paid Anthropic API if sub fails
+#   → codex tries sub only; no paid fallback
+#   → gemini tries free tier only; no paid fallback
+
+# paid_ok=False is the same as not setting it — free only.
 ```
+
+**Two-pass semantics**:
+1. **Pass 1** always runs for every spec: env API keys STRIPPED → forces subscription mode.
+2. **Pass 2** runs only for specs whose `spec.cli` is in `paid_ok` (or `paid_ok=True`): env API keys PRESENT → paid API fallback.
+
+If pass 1 fails and `paid_ok` is `None`/`False`/missing, pass 2 is skipped entirely. You never accidentally pay.
 
 
 ### `CLIResult` — what comes back
@@ -183,12 +194,11 @@ r = run(
 ### Fallback chain with budget awareness
 
 ```python
-# Prefer free tier on all, only burn paid credits as last resort.
+# Prefer free tier on all, only burn paid credits on the CLIs you opted into.
 results = use(
     ["gemini", "ollama", "claude", "codex"],   # order = preference
     "brief summary of the last commit",
-    free_first=True,                            # pass 1: no API keys
-    retry_paid=True,                            # pass 2: retry w/ keys
+    paid_ok=["claude", "codex"],                # only these two may fall through to paid
     timeout_s=90,
 )
 ```
@@ -303,7 +313,7 @@ The stripped env vars are defined per-spec:
 | gemini | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
 | ollama | (none — local, no subscription concept) |
 
-`use()` runs pass 1 by default with keys stripped (`free_first=True`), then retries each with keys intact on pass 2 (`retry_paid=True`). Maximizes free-tier usage without losing reliability.
+`use()` always runs pass 1 with keys stripped (subscription mode). Pass 2 (keys intact, paid API fallback) runs ONLY for CLIs you explicitly authorized via `paid_ok=True` or `paid_ok=["claude", ...]`. Default is `paid_ok=None`, which means pass 2 is skipped — cliworker stays free-tier only unless you opt in.
 
 ### Skip-cache
 
@@ -373,7 +383,7 @@ A: SDKs bypass the user's subscription entirely and always burn API credits. cli
 A: Those are for building agents. cliworker is for orchestrating subprocess calls. Lower-level, smaller blast radius, zero lock-in. Use both if you want.
 
 **Q: Doesn't stripping env vars in a subprocess leak somehow?**
-A: No. `env.pop()` operates on a copy passed to `subprocess.run(env=...)` — your real shell env is untouched. Verified in `tests/test_core.py::test_run_cli_strip_keys_removes_env_var`.
+A: No. `env.pop()` operates on a copy passed to `subprocess.run(env=...)` — your real shell env is untouched. Verified in `tests/test_core.py::test_run_strip_keys_removes_env_var`.
 
 **Q: What if I want to send text to a prompt and ALSO pipe content?**
 A: cliworker uses stdin for `stdin_content`. If you need both, concatenate into one argument or feed via a file flag in `extra_args`. Most CLIs don't support both gracefully.

@@ -191,8 +191,7 @@ def use(
     prompt: str | None = None,
     *,
     stdin_content: str | None = None,
-    free_first: bool = True,
-    retry_paid: bool = True,
+    paid_ok: bool | list[str] | None = None,
     timeout_s: int = DEFAULT_TIMEOUT,
     cwd: str | Path | None = None,
 ) -> list[CLIResult]:
@@ -206,38 +205,43 @@ def use(
         if first_ok:
             print(first_ok.stdout)
 
-    Two passes, both optional:
-      Pass 1 (free_first=True, default) — strip each spec's env_strip keys
-        before invoking. For claude/codex/gemini this forces subscription
-        mode rather than burning API credits. Claude CLI, for instance,
-        prefers ANTHROPIC_API_KEY over your Claude.ai subscription when the
-        var is set; stripping flips it back.
-      Pass 2 (retry_paid=True, default) — retry each spec with env keys
-        intact, in case subscription is unavailable and the paid API is
-        the only path that works. Set retry_paid=False to stay free-only.
+    Free-first, paid-only-if-you-said-so:
 
-    Returns the full list of attempts in order, stopping at the first
-    success. If every spec fails both passes, the list has one entry per
-    spec per pass.
+    Pass 1 — every spec is tried with its env_strip keys REMOVED (free /
+    subscription mode). For claude/codex/gemini this forces subscription
+    use instead of burning paid API credits.
+
+    Pass 2 — only runs for specs you explicitly authorized via `paid_ok`:
+      paid_ok=None     (default)  never use paid API. Free/subscription only.
+      paid_ok=False              same as None.
+      paid_ok=True               paid OK for every CLI in `specs`.
+      paid_ok=["claude","codex"] paid OK only for those names (string match
+                                 against spec.cli).
+
+    Returns all attempts in order, short-circuiting at the first success.
+    If every spec fails pass 1 AND no specs are paid_ok, pass 2 doesn't run.
     """
     specs_list = [get_spec(s) if isinstance(s, str) else s for s in specs]
     results: list[CLIResult] = []
 
-    # Force every spec to get a real attempt this call — a chained `use`
-    # is explicit intent, not something skip-cache should short-circuit.
-    if free_first:
-        for spec in specs_list:
-            r = _run_impl(
-                spec, prompt, stdin_content=stdin_content,
-                strip_keys=True, timeout_s=timeout_s, cwd=cwd,
-                skip_cache_check=False,
-            )
-            results.append(r)
-            if r.ok:
-                return results
+    # Pass 1: free / subscription mode for every spec
+    for spec in specs_list:
+        r = _run_impl(
+            spec, prompt, stdin_content=stdin_content,
+            strip_keys=True, timeout_s=timeout_s, cwd=cwd,
+            skip_cache_check=False,
+        )
+        results.append(r)
+        if r.ok:
+            return results
 
-    if retry_paid:
-        for spec in specs_list:
+    # Pass 2: paid-API retry — only for authorized specs
+    if paid_ok:
+        paid_specs = [
+            spec for spec in specs_list
+            if paid_ok is True or (isinstance(paid_ok, list) and spec.cli in paid_ok)
+        ]
+        for spec in paid_specs:
             r = _run_impl(
                 spec, prompt, stdin_content=stdin_content,
                 strip_keys=False, timeout_s=timeout_s, cwd=cwd,
