@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.0 — add invoke() primitive for non-LLM subprocess calls
+
+New public function: `cliworker.invoke(cli, *args, ...)`. Runs any CLI
+with any argv without applying LLM-invocation semantics.
+
+    from cliworker import invoke
+
+    r = invoke("codex", "marketplace", "add", "owner/repo")
+    r = invoke("gemini", "extensions", "install", url, "--consent")
+    r = invoke("gh", "release", "create", "v1.0.0", "--notes", "initial")
+
+Differences vs. `run()`:
+  - No env API key stripping (admin commands may need keys intact)
+  - No fast flags (no CLAUDE_FAST, no gemini MCP strip)
+  - No two-pass paid_ok logic
+  - No KNOWN_CLIS requirement — works with any binary name
+  - stdin=DEVNULL by default — accidental interactive prompts fail fast
+
+Motivated by paircode's native-register install flow: it needs to call
+`codex marketplace add` and `gemini extensions install` as admin
+commands, not LLM prompts. Rather than reimplement subprocess plumbing
+in paircode, grow cliworker to expose the lower-level primitive that
+both API shapes share underneath.
+
+10 new tests in test_invoke.py: success path, stdin defaults, timeout,
+not-on-PATH, skip-cache-off-by-default, unknown-CLI support, real-binary
+end-to-end via `echo`.
+
+Total tests: 88 green.
+
 ## 0.7.0 — run/run_fast API, default = full mode (breaking)
 
 Biggest API reshape since 0.1.0. Simpler shape, different default.

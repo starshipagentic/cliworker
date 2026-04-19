@@ -162,6 +162,101 @@ def run_fast(prompt: str, *clis: str | CLISpec, **kwargs) -> list[CLIResult]:
     return run(prompt, *clis, fast=True, **kwargs)
 
 
+def invoke(
+    cli: str,
+    *args: str,
+    timeout_s: int = DEFAULT_TIMEOUT,
+    stdin_content: str | None = None,
+    cwd: str | Path | None = None,
+    check_skip_cache: bool = False,
+) -> CLIResult:
+    """Run an arbitrary CLI subprocess. No LLM semantics.
+
+    Unlike `run()` / `run_fast()`, this primitive:
+      * does NOT strip any env API keys (no subscription-mode forcing)
+      * does NOT apply fast flags (no CLAUDE_FAST, no gemini MCP strip)
+      * does NOT run two passes / paid_ok retry
+      * does NOT require the CLI to be in KNOWN_CLIS
+
+    It's for admin commands and one-off subprocess calls — `codex marketplace add`,
+    `gemini extensions install`, `claude mcp list`, etc. — where you just want
+    cliworker's subprocess plumbing (timeout, error-capture, CLIResult shape,
+    FileNotFoundError handling) without the LLM-invocation baggage.
+
+    Defaults that differ from `run()`:
+      * stdin is closed (`DEVNULL`) when `stdin_content is None`. Admin commands
+        that accidentally hit an interactive prompt fail fast instead of hanging.
+      * skip-cache is OFF by default — admin commands are infrequent and
+        shouldn't inherit peer-review-loop failure tracking.
+
+    Usage:
+        result = invoke("codex", "marketplace", "add", "owner/repo")
+        if result.ok:
+            ...
+        else:
+            print(f"Run yourself: {' '.join(result.argv)}")
+            print(result.stderr)
+    """
+    # Build a minimal spec for the CLIResult — just for the .cli field.
+    # Callers pass a CLI name string; we don't require it to be in KNOWN_CLIS.
+    spec = CLISpec(cli=cli)
+
+    if check_skip_cache and is_skipped(cli):
+        return CLIResult(
+            spec=spec, ok=False, stdout="",
+            stderr=f"{cli} is in skip-cache (recent failure)",
+            duration_s=0.0, returncode=None, argv=[],
+            skipped_reason="skip_cache",
+        )
+
+    if _which(cli) is None:
+        return CLIResult(
+            spec=spec, ok=False, stdout="",
+            stderr=f"{cli} not found on PATH",
+            duration_s=0.0, returncode=None, argv=[],
+            skipped_reason="not_on_path",
+        )
+
+    argv = [cli, *args]
+    start = time.monotonic()
+
+    run_kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout_s,
+        "cwd": str(cwd) if cwd else None,
+        "check": False,
+    }
+    if stdin_content is not None:
+        run_kwargs["input"] = stdin_content
+    else:
+        run_kwargs["stdin"] = subprocess.DEVNULL
+
+    try:
+        proc = subprocess.run(argv, **run_kwargs)
+        duration = time.monotonic() - start
+        return CLIResult(
+            spec=spec, ok=(proc.returncode == 0),
+            stdout=proc.stdout, stderr=proc.stderr,
+            duration_s=duration, returncode=proc.returncode, argv=argv,
+        )
+    except subprocess.TimeoutExpired:
+        duration = time.monotonic() - start
+        return CLIResult(
+            spec=spec, ok=False, stdout="",
+            stderr=f"timeout after {timeout_s}s",
+            duration_s=duration, returncode=None, argv=argv,
+        )
+    except FileNotFoundError:
+        duration = time.monotonic() - start
+        return CLIResult(
+            spec=spec, ok=False, stdout="",
+            stderr=f"{cli} binary disappeared mid-call",
+            duration_s=duration, returncode=None, argv=argv,
+            skipped_reason="not_on_path",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Internal — single-CLI subprocess invocation
 # ---------------------------------------------------------------------------

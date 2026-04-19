@@ -36,17 +36,19 @@ if explicitly set).
 from cliworker.core import (
     CLIResult,
     CLISpec,
+    invoke,
     run,
     run_fast,
 )
 from cliworker.registry import KNOWN_CLIS, get_spec
 from cliworker.state import default_chain
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 __all__ = [
     "run",
     "run_fast",
+    "invoke",
     "CLIResult",
     "CLISpec",
     "get_spec",
