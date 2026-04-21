@@ -14,7 +14,9 @@ default chain from ~/.cliworker/state.json.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -39,6 +41,7 @@ class CLIResult:
     returncode: Optional[int]
     argv: list[str] = field(default_factory=list)
     skipped_reason: Optional[str] = None  # "not_on_path", "skip_cache", etc.
+    timeout_kind: Optional[str] = None  # "startup_idle" | "hard" | None (only set on timeout failures)
 
     @property
     def text(self) -> str:
@@ -59,6 +62,167 @@ def _which(binary: str) -> Optional[str]:
     import shutil
 
     return shutil.which(binary)
+
+
+# ---------------------------------------------------------------------------
+# Subprocess watchdog — catches silent-startup hangs that eat the full timeout
+# ---------------------------------------------------------------------------
+
+DEFAULT_STARTUP_IDLE_S = 30
+
+
+class _StreamReader(threading.Thread):
+    """Daemon thread reading a subprocess stream into a bytes buffer.
+
+    Records `last_byte_at` (monotonic time) on every chunk so the watchdog
+    loop can detect "process spawned, never wrote a byte" — i.e. a silent
+    startup hang. Uses `read1()` to avoid buffering deadlocks.
+    """
+
+    def __init__(self, stream):
+        super().__init__(daemon=True)
+        self.stream = stream
+        self.buf: list[bytes] = []
+        self.last_byte_at: float = 0.0  # 0 means "nothing yet"
+
+    def run(self) -> None:
+        try:
+            while True:
+                chunk = self.stream.read1(4096)
+                if not chunk:
+                    return
+                self.buf.append(chunk)
+                self.last_byte_at = time.monotonic()
+        except Exception:
+            return
+
+
+def _terminate_process_tree(proc: subprocess.Popen, grace_s: int = 2) -> None:
+    """SIGTERM the process group, wait, SIGKILL if still alive. POSIX-only."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        proc.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+_ORIG_SUBPROCESS_RUN = subprocess.run
+
+
+def _run_with_watchdog(
+    argv: list[str],
+    *,
+    env: Optional[dict[str, str]] = None,
+    cwd: Optional[str] = None,
+    stdin_content: Optional[str] = None,
+    timeout_s: int = DEFAULT_TIMEOUT,
+    startup_idle_s: int = DEFAULT_STARTUP_IDLE_S,
+) -> tuple[Optional[int], str, str, float, Optional[str]]:
+    """Spawn a subprocess with a startup-idle watchdog.
+
+    Kills the process if:
+      - elapsed > `timeout_s` (hard timeout), or
+      - elapsed > `startup_idle_s` AND zero bytes of stdout+stderr have been
+        seen (silent startup hang — the codex-exec-hang class).
+
+    Uses `start_new_session=True` + `os.killpg` so child processes (sandbox
+    helpers, git, etc.) are reaped cleanly.
+
+    Returns: (returncode, stdout, stderr, duration_s, timeout_kind).
+    `timeout_kind` is None on normal exit, "startup_idle" or "hard" on kill.
+    """
+    # Compat shim: if a test has monkeypatched subprocess.run, honor it — tests
+    # predating the watchdog expect to intercept the subprocess.run path and
+    # return a CompletedProcess. Adapt that CompletedProcess back to our tuple.
+    if subprocess.run is not _ORIG_SUBPROCESS_RUN:
+        start_compat = time.monotonic()
+        kwargs = {
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout_s,
+            "env": env,
+            "cwd": cwd,
+            "check": False,
+        }
+        if stdin_content is not None:
+            kwargs["input"] = stdin_content
+        else:
+            kwargs["stdin"] = subprocess.DEVNULL
+        try:
+            proc = subprocess.run(argv, **kwargs)
+            duration = time.monotonic() - start_compat
+            return (proc.returncode, proc.stdout or "", proc.stderr or "", duration, None)
+        except subprocess.TimeoutExpired:
+            duration = time.monotonic() - start_compat
+            return (None, "", "", duration, "hard")
+
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if stdin_content is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+        start_new_session=True,
+    )
+
+    out_reader = _StreamReader(proc.stdout)
+    err_reader = _StreamReader(proc.stderr)
+    out_reader.start()
+    err_reader.start()
+
+    if stdin_content is not None:
+        def _write_stdin() -> None:
+            try:
+                proc.stdin.write(stdin_content.encode())
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        threading.Thread(target=_write_stdin, daemon=True).start()
+
+    timeout_kind: Optional[str] = None
+    while True:
+        if proc.poll() is not None:
+            break
+        now = time.monotonic()
+        elapsed = now - start
+        if elapsed > timeout_s:
+            timeout_kind = "hard"
+            break
+        if (
+            startup_idle_s
+            and elapsed > startup_idle_s
+            and out_reader.last_byte_at == 0.0
+            and err_reader.last_byte_at == 0.0
+        ):
+            timeout_kind = "startup_idle"
+            break
+        time.sleep(0.25)
+
+    if timeout_kind is not None:
+        _terminate_process_tree(proc, grace_s=2)
+
+    out_reader.join(timeout=2)
+    err_reader.join(timeout=2)
+
+    stdout = b"".join(out_reader.buf).decode(errors="replace")
+    stderr = b"".join(err_reader.buf).decode(errors="replace")
+    duration = time.monotonic() - start
+    return proc.returncode, stdout, stderr, duration, timeout_kind
 
 
 # ---------------------------------------------------------------------------
@@ -218,43 +382,42 @@ def invoke(
         )
 
     argv = [cli, *args]
-    start = time.monotonic()
-
-    run_kwargs: dict = {
-        "capture_output": True,
-        "text": True,
-        "timeout": timeout_s,
-        "cwd": str(cwd) if cwd else None,
-        "check": False,
-    }
-    if stdin_content is not None:
-        run_kwargs["input"] = stdin_content
-    else:
-        run_kwargs["stdin"] = subprocess.DEVNULL
 
     try:
-        proc = subprocess.run(argv, **run_kwargs)
-        duration = time.monotonic() - start
-        return CLIResult(
-            spec=spec, ok=(proc.returncode == 0),
-            stdout=proc.stdout, stderr=proc.stderr,
-            duration_s=duration, returncode=proc.returncode, argv=argv,
-        )
-    except subprocess.TimeoutExpired:
-        duration = time.monotonic() - start
-        return CLIResult(
-            spec=spec, ok=False, stdout="",
-            stderr=f"timeout after {timeout_s}s",
-            duration_s=duration, returncode=None, argv=argv,
+        rc, stdout, stderr, duration, timeout_kind = _run_with_watchdog(
+            argv,
+            cwd=str(cwd) if cwd else None,
+            stdin_content=stdin_content,
+            timeout_s=timeout_s,
         )
     except FileNotFoundError:
-        duration = time.monotonic() - start
         return CLIResult(
             spec=spec, ok=False, stdout="",
             stderr=f"{cli} binary disappeared mid-call",
-            duration_s=duration, returncode=None, argv=argv,
+            duration_s=0.0, returncode=None, argv=argv,
             skipped_reason="not_on_path",
         )
+
+    if timeout_kind == "hard":
+        return CLIResult(
+            spec=spec, ok=False, stdout=stdout,
+            stderr=stderr or f"timeout after {timeout_s}s",
+            duration_s=duration, returncode=None, argv=argv,
+            timeout_kind="hard",
+        )
+    if timeout_kind == "startup_idle":
+        return CLIResult(
+            spec=spec, ok=False, stdout=stdout,
+            stderr=stderr or f"startup-idle hang: no output in first {DEFAULT_STARTUP_IDLE_S}s (process killed)",
+            duration_s=duration, returncode=None, argv=argv,
+            timeout_kind="startup_idle",
+        )
+
+    return CLIResult(
+        spec=spec, ok=(rc == 0),
+        stdout=stdout, stderr=stderr,
+        duration_s=duration, returncode=rc, argv=argv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,47 +454,47 @@ def _run_impl(
     env = _build_env(spec, strip_keys)
 
     def _invoke() -> CLIResult:
-        start = time.monotonic()
         try:
-            proc = subprocess.run(
+            rc, stdout, stderr, duration, timeout_kind = _run_with_watchdog(
                 argv,
-                input=stdin_content,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
                 env=env,
                 cwd=str(cwd) if cwd else None,
-                check=False,
-            )
-            duration = time.monotonic() - start
-            ok = proc.returncode == 0
-            stdout, stderr = proc.stdout, proc.stderr
-            # Friendlier error for ollama's cryptic "invalid model name" — it
-            # actually means the model isn't pulled. Point the user at the fix.
-            if not ok and spec.cli == "ollama" and stderr and "invalid model" in stderr.lower():
-                model_in_argv = argv[2] if len(argv) >= 3 else "gemma3:4b"
-                stderr = (
-                    f"ollama model '{model_in_argv}' not pulled. "
-                    f"Run: ollama pull {model_in_argv}\n"
-                    f"(original ollama error: {stderr.strip()})"
-                )
-            return CLIResult(
-                spec=spec, ok=ok, stdout=stdout, stderr=stderr,
-                duration_s=duration, returncode=proc.returncode, argv=argv,
-            )
-        except subprocess.TimeoutExpired:
-            duration = time.monotonic() - start
-            return CLIResult(
-                spec=spec, ok=False, stdout="", stderr=f"timeout after {timeout_s}s",
-                duration_s=duration, returncode=None, argv=argv,
+                stdin_content=stdin_content,
+                timeout_s=timeout_s,
             )
         except FileNotFoundError:
-            duration = time.monotonic() - start
             return CLIResult(
                 spec=spec, ok=False, stdout="", stderr=f"{spec.cli} binary disappeared mid-call",
-                duration_s=duration, returncode=None, argv=argv,
+                duration_s=0.0, returncode=None, argv=argv,
                 skipped_reason="not_on_path",
             )
+        if timeout_kind == "hard":
+            return CLIResult(
+                spec=spec, ok=False, stdout=stdout, stderr=stderr or f"timeout after {timeout_s}s",
+                duration_s=duration, returncode=None, argv=argv,
+                timeout_kind="hard",
+            )
+        if timeout_kind == "startup_idle":
+            return CLIResult(
+                spec=spec, ok=False, stdout=stdout,
+                stderr=stderr or f"startup-idle hang: no output in first {DEFAULT_STARTUP_IDLE_S}s (process killed)",
+                duration_s=duration, returncode=None, argv=argv,
+                timeout_kind="startup_idle",
+            )
+        ok = rc == 0
+        # Friendlier error for ollama's cryptic "invalid model name" — it
+        # actually means the model isn't pulled. Point the user at the fix.
+        if not ok and spec.cli == "ollama" and stderr and "invalid model" in stderr.lower():
+            model_in_argv = argv[2] if len(argv) >= 3 else "gemma3:4b"
+            stderr = (
+                f"ollama model '{model_in_argv}' not pulled. "
+                f"Run: ollama pull {model_in_argv}\n"
+                f"(original ollama error: {stderr.strip()})"
+            )
+        return CLIResult(
+            spec=spec, ok=ok, stdout=stdout, stderr=stderr,
+            duration_s=duration, returncode=rc, argv=argv,
+        )
 
     # Gemini needs MCP strip/restore at fs level when fast; wrap with it.
     # No-op for other CLIs.
