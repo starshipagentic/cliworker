@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.4 — per-CLI startup-idle watchdog (gemini Pro no longer killed mid-think)
+## 0.8.5 — per-CLI startup-idle watchdog (gemini Pro no longer killed mid-think)
 
 `CLISpec` gains an optional `startup_idle_s` field. The startup-idle watchdog
 (which kills a subprocess that writes zero bytes within N seconds — the
