@@ -461,6 +461,7 @@ def _run_impl(
                 cwd=str(cwd) if cwd else None,
                 stdin_content=stdin_content,
                 timeout_s=timeout_s,
+                startup_idle_s=spec.startup_idle_s or DEFAULT_STARTUP_IDLE_S,
             )
         except FileNotFoundError:
             return CLIResult(
@@ -477,7 +478,7 @@ def _run_impl(
         if timeout_kind == "startup_idle":
             return CLIResult(
                 spec=spec, ok=False, stdout=stdout,
-                stderr=stderr or f"startup-idle hang: no output in first {DEFAULT_STARTUP_IDLE_S}s (process killed)",
+                stderr=stderr or f"startup-idle hang: no output in first {spec.startup_idle_s or DEFAULT_STARTUP_IDLE_S}s (process killed)",
                 duration_s=duration, returncode=None, argv=argv,
                 timeout_kind="startup_idle",
             )

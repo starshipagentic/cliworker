@@ -46,6 +46,11 @@ class CLISpec:
     fast: bool = True
     extra_args: list[str] = field(default_factory=list)
     env_strip: list[str] = field(default_factory=list)
+    # Per-CLI override for the startup-idle watchdog (seconds of zero output
+    # before the process is killed as a silent-startup hang). None = use
+    # DEFAULT_STARTUP_IDLE_S. Slow first-token CLIs — e.g. gemini Pro reading
+    # files then reasoning — need a longer leash or they're killed mid-think.
+    startup_idle_s: Optional[int] = None
 
     def build_argv(self, prompt: str | None) -> list[str]:
         """Assemble the full subprocess argv for this spec + prompt."""
@@ -112,6 +117,7 @@ KNOWN_CLIS: dict[str, CLISpec] = {
         model_flag="-m",
         fast=False,                  # v0.7.0: full by default. opt in via fast=True
         env_strip=["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        startup_idle_s=120,          # Pro reads files + reasons before first token; 30s killed it mid-think
     ),
     "ollama": CLISpec(
         cli="ollama",

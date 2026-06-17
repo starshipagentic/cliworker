@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.4 — per-CLI startup-idle watchdog (gemini Pro no longer killed mid-think)
+
+`CLISpec` gains an optional `startup_idle_s` field. The startup-idle watchdog
+(which kills a subprocess that writes zero bytes within N seconds — the
+silent-startup-hang guard) now honors a per-CLI override instead of the
+global `DEFAULT_STARTUP_IDLE_S = 30`.
+
+`gemini` is set to `startup_idle_s=120`. A Pro-tier model that reads a file
+and reasons before emitting its first token routinely takes longer than 30s
+to first byte; the old global watchdog killed it mid-think with a
+`startup_idle` timeout. Fast CLIs keep the 30s default.
+
+Wired through `_run_impl`'s watchdog call and its `startup_idle` error
+message. The admin `invoke()` path keeps the 30s default (admin commands are
+not slow-first-token).
+
 ## 0.8.0 — add invoke() primitive for non-LLM subprocess calls
 
 New public function: `cliworker.invoke(cli, *args, ...)`. Runs any CLI
